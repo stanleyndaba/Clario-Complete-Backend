@@ -116,6 +116,30 @@ export function getPendingMigrationFiles(files: readonly string[], applied: Read
   return files.filter((file) => !applied.has(file) && !supersedingMigrationFor(file, applied));
 }
 
+function certificationBootstrapEnabled(): boolean {
+  return process.env.CERTIFICATION_RUNTIME === 'true'
+    && process.env.CERTIFICATION_DATABASE_BOOTSTRAP === 'true';
+}
+
+/**
+ * An empty isolated certification database must never import production platform
+ * administrator identities. Migration 130 otherwise creates a required schema
+ * table and then asserts that two production administrators already exist.
+ * Keep the schema portion but omit only that seed/assertion block when the
+ * explicitly opt-in certification bootstrap mode is active.
+ */
+function certificationSafeMigrationSql(file: string, sql: string): string {
+  if (!certificationBootstrapEnabled() || file !== '130_create_platform_admins_authority.sql') {
+    return sql;
+  }
+
+  const withoutProductionAdminSeed = sql.replace(/\nDO \$\$[\s\S]*?END \$\$;\n?/, '\n');
+  if (withoutProductionAdminSeed === sql) {
+    throw new Error('Certification bootstrap could not safely remove the production platform-admin seed block.');
+  }
+  return withoutProductionAdminSeed;
+}
+
 function neonCompatibleSql(sql: string): string {
   return sql
     .replace(
@@ -231,9 +255,11 @@ async function run(): Promise<void> {
         continue;
       }
 
-      const sql = neonCompatibleSql(readFileSync(path.join(migrationsDir, file), 'utf8'));
+      const rawSql = readFileSync(path.join(migrationsDir, file), 'utf8');
+      const sql = neonCompatibleSql(certificationSafeMigrationSql(file, rawSql));
 
-      console.log(`run  ${file}`);
+      const certificationOnlyMigration = certificationBootstrapEnabled() && file === '130_create_platform_admins_authority.sql';
+      console.log(`run  ${file}${certificationOnlyMigration ? ' (certification schema-only platform-admin authority)' : ''}`);
       await client.query('BEGIN');
       try {
         await client.query(sql);
