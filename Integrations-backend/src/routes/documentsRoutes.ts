@@ -1243,21 +1243,31 @@ router.post('/:id/archive', async (req: Request, res: Response) => {
             archived_linked_case_count: linkedCaseCount || 0
         };
 
-        const { error: updateError } = await supabaseAdmin
+        const { data: updatedDocument, error: updateError } = await supabaseAdmin
             .from('evidence_documents')
             .update({ metadata: nextMetadata, updated_at: archivedAt })
+            .select('id, metadata')
             .eq('id', docId)
-            .eq('tenant_id', tenantId);
+            .eq('tenant_id', tenantId)
+            .maybeSingle();
 
         if (updateError) throw updateError;
+        if (!updatedDocument || getDocumentLifecycle(updatedDocument).lifecycleState !== 'archived') {
+            throw new Error('Archive lifecycle metadata was not durably persisted');
+        }
 
-        await evidenceAuditService.logManualEdit(
+        const auditLogged = await evidenceAuditService.logManualEdit(
             docId,
+            tenantId,
             userId,
             'lifecycle_state',
             lifecycle.lifecycleState,
-            'archived'
+            'archived',
+            reason
         );
+        if (!auditLogged) {
+            throw new Error('Archive lifecycle audit event could not be preserved');
+        }
 
         res.json({
             success: true,
@@ -1305,7 +1315,7 @@ router.post('/:id/supersede', async (req: Request, res: Response) => {
         const originalLifecycle = getDocumentLifecycle(original);
         const replacementLifecycle = getDocumentLifecycle(replacement);
 
-        const { error: originalUpdateError } = await supabaseAdmin
+        const { data: updatedOriginal, error: originalUpdateError } = await supabaseAdmin
             .from('evidence_documents')
             .update({
                 metadata: {
@@ -1318,12 +1328,17 @@ router.post('/:id/supersede', async (req: Request, res: Response) => {
                 },
                 updated_at: supersededAt
             })
+            .select('id, metadata')
             .eq('id', docId)
-            .eq('tenant_id', tenantId);
+            .eq('tenant_id', tenantId)
+            .maybeSingle();
 
         if (originalUpdateError) throw originalUpdateError;
+        if (!updatedOriginal || getDocumentLifecycle(updatedOriginal).lifecycleState !== 'superseded') {
+            throw new Error('Original supersession lifecycle metadata was not durably persisted');
+        }
 
-        const { error: replacementUpdateError } = await supabaseAdmin
+        const { data: updatedReplacement, error: replacementUpdateError } = await supabaseAdmin
             .from('evidence_documents')
             .update({
                 metadata: {
@@ -1334,15 +1349,23 @@ router.post('/:id/supersede', async (req: Request, res: Response) => {
                 },
                 updated_at: supersededAt
             })
+            .select('id, metadata')
             .eq('id', replacementDocumentId)
-            .eq('tenant_id', tenantId);
+            .eq('tenant_id', tenantId)
+            .maybeSingle();
 
         if (replacementUpdateError) throw replacementUpdateError;
+        if (!updatedReplacement || getDocumentLifecycle(updatedReplacement).supersedesDocumentId !== docId) {
+            throw new Error('Replacement lineage metadata was not durably persisted');
+        }
 
-        await Promise.all([
-            evidenceAuditService.logManualEdit(docId, userId, 'lifecycle_state', originalLifecycle.lifecycleState, 'superseded'),
-            evidenceAuditService.logManualEdit(replacementDocumentId, userId, 'supersedes_document_id', String(replacementLifecycle.supersedesDocumentId || ''), docId)
+        const auditResults = await Promise.all([
+            evidenceAuditService.logManualEdit(docId, tenantId, userId, 'lifecycle_state', originalLifecycle.lifecycleState, 'superseded', 'Superseded by the selected replacement artifact'),
+            evidenceAuditService.logManualEdit(replacementDocumentId, tenantId, userId, 'supersedes_document_id', String(replacementLifecycle.supersedesDocumentId || ''), docId, 'Recorded original-artifact lineage for the selected replacement')
         ]);
+        if (auditResults.some(result => !result)) {
+            throw new Error('Supersession lifecycle audit event could not be preserved');
+        }
 
         res.json({
             success: true,

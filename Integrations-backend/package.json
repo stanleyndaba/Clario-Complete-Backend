@@ -26,6 +26,7 @@
     "db:migrate:transfer-reconciliation-133": "ts-node scripts/apply-transfer-ledger-reconciliation-133.ts",
     "db:migrate:generate": "ts-node scripts/run-migrations-supabase.ts",
     "db:migrate:single": "psql -d $DATABASE_URL -f migrations/005_add_dispute_system.sql",
+    "db:migrate:evidence-lifecycle-metadata": "ts-node scripts/apply-evidence-lifecycle-metadata-migration.ts",
     "audit:certification-preflight": "ts-node scripts/run-audit-certification-preflight.ts",
     "db:seed": "ts-node scripts/seed.ts",
     "seed:acme-demo": "ts-node scripts/seed-acme-operations-demo.ts",

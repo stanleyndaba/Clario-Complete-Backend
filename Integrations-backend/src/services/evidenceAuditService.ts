@@ -10,7 +10,7 @@
  * - Usage in filings (attached to cases)
  */
 
-import { supabaseAdmin } from '../database/supabaseClient';
+import { supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 
 // Current parser version - update when parser logic changes
@@ -187,34 +187,56 @@ class EvidenceAuditService {
 
             // 4. Check for audit_logs table entries
             try {
-                const { data: auditLogs } = await supabaseAdmin
+                let auditLogsQuery = supabaseAdmin
                     .from('audit_logs')
                     .select('*')
                     .eq('resource_id', documentId)
                     .eq('resource_type', 'evidence_document')
                     .order('created_at', { ascending: true });
 
+                if (tenantId) {
+                    auditLogsQuery = auditLogsQuery.eq('tenant_id', tenantId);
+                }
+
+                const { data: auditLogs } = await auditLogsQuery;
+
                 if (auditLogs && auditLogs.length > 0) {
                     for (const log of auditLogs) {
-                        const logDetails = typeof log.details === 'string'
+                        const logMetadata = typeof log.metadata === 'string'
+                            ? JSON.parse(log.metadata)
+                            : log.metadata || {};
+                        const legacyDetails = typeof log.details === 'string'
                             ? JSON.parse(log.details)
                             : log.details || {};
+                        const payloadBefore = typeof log.payload_before === 'string'
+                            ? JSON.parse(log.payload_before)
+                            : log.payload_before || {};
+                        const payloadAfter = typeof log.payload_after === 'string'
+                            ? JSON.parse(log.payload_after)
+                            : log.payload_after || {};
+                        const fieldName = logMetadata.field || legacyDetails.field || Object.keys(payloadAfter)[0] || Object.keys(payloadBefore)[0];
+                        const oldValue = payloadBefore[fieldName] ?? legacyDetails.old_value;
+                        const newValue = payloadAfter[fieldName] ?? legacyDetails.new_value;
 
                         events.push({
                             id: `audit-${log.id}`,
                             documentId: doc.id,
                             eventType: this.mapAuditLogAction(log.action),
                             timestamp: log.created_at,
-                            actor: log.user_id || 'system',
+                            actor: log.actor_user_id || log.user_id || 'system',
                             details: {
-                                fieldName: logDetails.field,
-                                oldValue: logDetails.old_value,
-                                newValue: logDetails.new_value,
-                                reason: logDetails.reason
+                                fieldName,
+                                oldValue: oldValue == null ? undefined : String(oldValue),
+                                newValue: newValue == null ? undefined : String(newValue),
+                                reason: logMetadata.reason || legacyDetails.reason
                             },
                             narrative: this.generateNarrative(log.action, {
                                 filename: doc.filename,
-                                ...logDetails
+                                field: fieldName,
+                                old_value: oldValue,
+                                new_value: newValue,
+                                ...legacyDetails,
+                                ...logMetadata
                             })
                         });
                     }
@@ -423,37 +445,46 @@ class EvidenceAuditService {
      */
     async logManualEdit(
         documentId: string,
+        tenantId: string,
         userId: string,
         fieldName: string,
         oldValue: string,
-        newValue: string
+        newValue: string,
+        reason?: string
     ): Promise<boolean> {
         try {
+            const editedAt = new Date().toISOString();
             const { error } = await supabaseAdmin
                 .from('audit_logs')
                 .insert({
+                    tenant_id: tenantId,
+                    actor_user_id: convertUserIdToUuid(userId),
+                    actor_type: 'user',
                     resource_id: documentId,
                     resource_type: 'evidence_document',
                     action: 'manual_edit',
-                    user_id: userId,
-                    details: {
+                    payload_before: { [fieldName]: oldValue },
+                    payload_after: { [fieldName]: newValue },
+                    metadata: {
                         field: fieldName,
-                        old_value: oldValue,
-                        new_value: newValue,
-                        edited_at: new Date().toISOString()
+                        reason: reason || null,
+                        edited_at: editedAt
                     },
-                    created_at: new Date().toISOString()
+                    created_at: editedAt
                 });
 
             if (error) {
-                logger.warn('⚠️ [AUDIT] Failed to log manual edit, trying fallback', { error: error.message });
-                // Fallback: update document metadata with edit history
-                return this.logEditToDocumentMetadata(documentId, userId, fieldName, oldValue, newValue);
+                logger.warn('⚠️ [AUDIT] Failed to log manual edit, trying provenance fallback', {
+                    documentId,
+                    tenantId,
+                    error: error.message
+                });
+                return this.logEditToDocumentMetadata(documentId, tenantId, userId, fieldName, oldValue, newValue, reason);
             }
 
             return true;
         } catch (error: any) {
-            logger.error('❌ [AUDIT] Failed to log manual edit', { error: error.message });
+            logger.error('❌ [AUDIT] Failed to log manual edit', { documentId, tenantId, error: error.message });
             return false;
         }
     }
@@ -463,44 +494,51 @@ class EvidenceAuditService {
      */
     private async logEditToDocumentMetadata(
         documentId: string,
+        tenantId: string,
         userId: string,
         fieldName: string,
         oldValue: string,
-        newValue: string
+        newValue: string,
+        reason?: string
     ): Promise<boolean> {
         try {
-            const { data: doc } = await supabaseAdmin
+            const { data: doc, error: docError } = await supabaseAdmin
                 .from('evidence_documents')
-                .select('parsed_metadata')
+                .select('metadata')
                 .eq('id', documentId)
+                .eq('tenant_id', tenantId)
                 .single();
 
-            if (!doc) return false;
+            if (docError || !doc) return false;
 
-            const meta = typeof doc.parsed_metadata === 'string'
-                ? JSON.parse(doc.parsed_metadata)
-                : doc.parsed_metadata || {};
-
-            const editHistory = meta._edit_history || [];
+            const metadata = typeof doc.metadata === 'string'
+                ? JSON.parse(doc.metadata)
+                : doc.metadata || {};
+            const editHistory = Array.isArray(metadata._audit_history) ? metadata._audit_history : [];
             editHistory.push({
+                action: 'manual_edit',
                 field: fieldName,
                 old_value: oldValue,
                 new_value: newValue,
-                edited_by: userId,
+                reason: reason || null,
+                actor_user_id: convertUserIdToUuid(userId),
+                actor_type: 'user',
+                tenant_id: tenantId,
                 edited_at: new Date().toISOString()
             });
 
-            await supabaseAdmin
+            const { error: updateError } = await supabaseAdmin
                 .from('evidence_documents')
                 .update({
-                    parsed_metadata: { ...meta, _edit_history: editHistory },
+                    metadata: { ...metadata, _audit_history: editHistory },
                     updated_at: new Date().toISOString()
                 })
-                .eq('id', documentId);
+                .eq('id', documentId)
+                .eq('tenant_id', tenantId);
 
-            return true;
+            return !updateError;
         } catch (error: any) {
-            logger.error('❌ [AUDIT] Fallback edit logging failed', { error: error.message });
+            logger.error('❌ [AUDIT] Provenance fallback logging failed', { documentId, tenantId, error: error.message });
             return false;
         }
     }

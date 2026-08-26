@@ -4221,8 +4221,13 @@ router.get('/claims/:id/audit', async (req: Request, res: Response) => {
 router.post('/documents/:id/audit/edit', async (req: Request, res: Response) => {
   try {
     const documentId = req.params.id;
+    const tenantId = (req as any).tenant?.tenantId;
     const userId = (req as any).userId || (req as any).user?.id || 'demo-user';
     const { fieldName, oldValue, newValue } = req.body;
+
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
 
     if (!fieldName) {
       return res.status(400).json({
@@ -4235,6 +4240,7 @@ router.post('/documents/:id/audit/edit', async (req: Request, res: Response) => 
 
     const success = await evidenceAuditService.logManualEdit(
       documentId,
+      tenantId,
       userId,
       fieldName,
       oldValue || '',
