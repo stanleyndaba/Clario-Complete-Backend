@@ -1,0 +1,4 @@
+# SYNTHETIC_TRAINING_ONLY scenario=SYN-CONTROL-001 revision=01
+AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal,FulfillmentChannel,CurrencyCode,SellerSKU,ASIN
+SYN-ORDER-001,2026-07-01T10:00:00Z,Shipped,120.00,FBA,USD,SYN-SKU-A,SYN-ASIN-A
+SYN-ORDER-002,2026-07-02T11:00:00Z,Shipped,75.50,FBA,USD,SYN-SKU-B,SYN-ASIN-B

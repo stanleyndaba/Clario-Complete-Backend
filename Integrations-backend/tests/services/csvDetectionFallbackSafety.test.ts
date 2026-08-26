@@ -211,6 +211,51 @@ describe('CSV detection fallback safety', () => {
     expect(tables.csv_upload_runs[0].error).toContain('Enhanced pipeline exploded');
   });
 
+  it('persists synthetic execution provenance through the terminal queue transition', async () => {
+    const previousTrainingTenant = process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID;
+    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = tenantId;
+    mockTriggerDetectionPipeline.mockResolvedValue({
+      success: true,
+      jobId: 'synthetic-complete-job',
+      message: 'Synthetic detection completed',
+      detectionsFound: 0,
+      estimatedRecovery: 0,
+    });
+
+    try {
+      const result = await service.ingestSyntheticTrainingFiles(
+        userId,
+        [{ buffer: Buffer.from(orderCsv), originalname: 'orders.csv', mimetype: 'text/csv' }],
+        { explicitType: 'orders', triggerDetection: true, tenantId }
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockLegacyEnqueueDetectionJob).not.toHaveBeenCalled();
+      expect(tables.detection_queue).toHaveLength(1);
+      expect(tables.detection_queue[0].status).toBe('completed');
+      expect(tables.detection_queue[0].payload.execution_provenance).toBe('SYNTHETIC_TRAINING_ONLY');
+      expect(tables.detection_queue[0].payload.detection_phase).toBe('completed');
+      expect(mockTriggerDetectionPipeline).toHaveBeenCalledWith(
+        userId,
+        expect.stringMatching(/^synthetic_csv_/),
+        'csv_upload',
+        expect.objectContaining({
+          tenantId,
+          syntheticExecution: expect.objectContaining({
+            provenance: 'SYNTHETIC_TRAINING_ONLY',
+            tenantId,
+          }),
+        })
+      );
+    } finally {
+      if (previousTrainingTenant === undefined) {
+        delete process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID;
+      } else {
+        process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = previousTrainingTenant;
+      }
+    }
+  });
+
   it('fails honestly when enhanced detection reports findings but persists zero detection_results rows', async () => {
     mockTriggerDetectionPipeline.mockResolvedValue({
       success: true,

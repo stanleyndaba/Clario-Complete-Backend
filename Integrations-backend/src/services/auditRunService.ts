@@ -20,6 +20,13 @@ import {
   classifyConnectedAuditTruth,
   type ConnectedAuditTruthState,
 } from './connectedAuditTruthService';
+import {
+  SYNTHETIC_TRAINING_SYNC_PREFIX,
+  createSyntheticAuditExecutionContext,
+  resolveTrustedSyntheticAuditExecutionContext,
+  syntheticTrainingSummaryFields,
+  type SyntheticAuditExecutionContext,
+} from './syntheticAuditExecutionContext';
 
 type AuditRunStatus =
   | 'created'
@@ -56,6 +63,10 @@ type AuditSummary = {
   firstUsefulResult?: Record<string, unknown> | null;
   firstUsefulResultAt?: string | null;
   dataTruthState?: ConnectedAuditTruthState;
+  syntheticTraining?: boolean;
+  executionProvenance?: 'SYNTHETIC_TRAINING_ONLY';
+  trainingLabel?: 'SYNTHETIC TRAINING ONLY';
+  commercialSuppressed?: boolean;
 };
 
 const EMPTY_SUMMARY: AuditSummary = {
@@ -112,6 +123,22 @@ function isUnsafePipelineMessage(message: string): boolean {
     normalized.includes('typeerror') ||
     normalized.includes('syntaxerror') ||
     normalized.includes('pipeline failed');
+}
+
+function resolveSyntheticAuditContextFromRecord(audit: any, summary?: any): SyntheticAuditExecutionContext | null {
+  return resolveTrustedSyntheticAuditExecutionContext(
+    String(audit?.tenant_id || ''),
+    audit?.sync_id,
+    summary || audit?.summary || null,
+  );
+}
+
+function withSyntheticTrainingSummary(summary: AuditSummary): AuditSummary {
+  return {
+    ...summary,
+    ...syntheticTrainingSummaryFields(),
+    message: `SYNTHETIC TRAINING ONLY — ${summary.message}`,
+  };
 }
 
 function safeFailureSummary(message?: string | null): AuditSummary {
@@ -662,7 +689,6 @@ class AuditRunService {
     const sourceWarnings = Object.keys(sourceMap)
       .filter((csvType) => !suppliedTypes.has(csvType))
       .map((csvType) => ({ source: sourceMap[csvType], reason: 'not_uploaded' }));
-
     return {
       sync_id: uploadRun?.sync_id,
       status: uploadRun?.status === 'failed' ? 'failed' : 'completed',
@@ -709,7 +735,7 @@ class AuditRunService {
     const [{ data: queueRows, error: queueError }, { count: resultCount, error: resultError }] = await Promise.all([
       supabaseAdmin
         .from('detection_queue')
-        .select('status, processed_at, error_message, created_at, updated_at')
+        .select('status, processed_at, error_message, created_at, updated_at, payload')
         .eq('tenant_id', tenantId)
         .eq('seller_id', userId)
         .eq('sync_id', syncId)
@@ -733,6 +759,7 @@ class AuditRunService {
       resultCount: Number(resultCount || 0),
       error: queue?.error_message || null,
       completedAt: queue?.processed_at || queue?.updated_at || null,
+      executionProvenance: queue?.payload?.execution_provenance || null,
     };
   }
 
@@ -745,7 +772,7 @@ class AuditRunService {
   }) {
     const safeUserId = convertUserIdToUuid(input.userId);
     const syncId = String(input.syncId || '').trim();
-    if (!syncId || !syncId.startsWith('csv_')) {
+    if (!syncId || (!syncId.startsWith('csv_') && !syncId.startsWith(SYNTHETIC_TRAINING_SYNC_PREFIX))) {
       throw new Error('A valid CSV sync is required for a manual report audit.');
     }
 
@@ -786,6 +813,13 @@ class AuditRunService {
     }
 
     const detection = await this.getCsvDetectionStatusForAudit(safeUserId, input.tenantId, syncId);
+    const syntheticExecution = resolveTrustedSyntheticAuditExecutionContext(input.tenantId, syncId, {
+      executionProvenance: detection.executionProvenance,
+    });
+    const syntheticTraining = Boolean(syntheticExecution);
+    if (syntheticTraining && input.auditIntentId) {
+      throw new Error('Synthetic training audits cannot be linked to seller audit intents.');
+    }
     if (detection.status === 'failed') {
       throw new Error('Detection failed for this manual report upload.');
     }
@@ -807,18 +841,22 @@ class AuditRunService {
       throw new Error(`Failed to load manual report audit: ${existingError.message}`);
     }
 
-    if (!existing?.id) {
+    if (!existing?.id && !syntheticTraining) {
       const latestCompletedAudit = await this.getLatestCompletedAudit(safeUserId, input.tenantId, null);
       this.assertFreeAuditEligible(latestCompletedAudit, 'csv_upload');
     }
 
-    const syncStatus = this.buildCsvSyncStatus(uploadRun);
-    const summary = auditStatus === 'completed'
+    const baseSyncStatus = this.buildCsvSyncStatus(uploadRun);
+    const syncStatus = syntheticExecution
+      ? { ...baseSyncStatus, metadata: { ...baseSyncStatus.metadata, ...syntheticTrainingSummaryFields() } }
+      : baseSyncStatus;
+    const rawSummary = auditStatus === 'completed'
       ? await this.buildSummary(safeUserId, input.tenantId, syncId, syncStatus, 'csv_upload')
       : {
           ...SYNC_IN_PROGRESS_SUMMARY,
           message: 'Manual report detection is still running. Margin will finish the recovery audit when processing completes.',
         };
+    const summary = syntheticExecution ? withSyntheticTrainingSummary(rawSummary) : rawSummary;
     const firstUsefulResult = auditStatus === 'completed'
       ? deriveFirstUsefulResult(summary)
       : null;
@@ -872,6 +910,10 @@ class AuditRunService {
           return data;
         })();
 
+    if (syntheticTraining) {
+      return audit;
+    }
+
     if (audit.status === 'completed' && !audit.commercial_state) {
       const workspaceEntitlement = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
       const { audit: commercialAudit } = await this.persistCommercialOutcome({
@@ -921,6 +963,10 @@ class AuditRunService {
     }
 
     const detection = await this.getCsvDetectionStatusForAudit(audit.user_id, audit.tenant_id, audit.sync_id);
+    const syntheticExecution = resolveTrustedSyntheticAuditExecutionContext(audit.tenant_id, audit.sync_id, {
+      executionProvenance: detection.executionProvenance,
+    });
+    const syntheticTraining = Boolean(syntheticExecution);
     if (detection.status === 'failed') {
       return this.updateAudit(audit.id, {
         status: 'failed',
@@ -938,8 +984,12 @@ class AuditRunService {
       });
     }
 
-    const syncStatus = this.buildCsvSyncStatus(uploadRun);
-    const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus, audit.source_type);
+    const baseSyncStatus = this.buildCsvSyncStatus(uploadRun);
+    const syncStatus = syntheticExecution
+      ? { ...baseSyncStatus, metadata: { ...baseSyncStatus.metadata, ...syntheticTrainingSummaryFields() } }
+      : baseSyncStatus;
+    const rawSummary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus, audit.source_type);
+    const summary = syntheticTraining ? withSyntheticTrainingSummary(rawSummary) : rawSummary;
     const completedAt = audit.completed_at || detection.completedAt || uploadRun.completed_at || new Date().toISOString();
     const completedAudit = await this.updateAudit(audit.id, {
       status: 'completed',
@@ -948,6 +998,10 @@ class AuditRunService {
       first_useful_result_at: audit.first_useful_result_at || completedAt,
       first_useful_result: deriveFirstUsefulResult(summary),
     });
+
+    if (syntheticTraining) {
+      return completedAudit;
+    }
 
     const previousAudit = await this.getLatestCompletedAudit(audit.user_id, audit.tenant_id, audit.id);
     const workspaceEntitlement = await workspaceEntitlementService.getTenantEntitlement(audit.tenant_id);
@@ -979,6 +1033,14 @@ class AuditRunService {
    * until the product has an authoritative seller-remediation lifecycle.
    */
   private async emitCompletedAuditSignal(audit: any, summary: AuditSummary) {
+    const syntheticExecution = resolveSyntheticAuditContextFromRecord(audit, summary);
+    if (syntheticExecution) {
+      logger.info('[AUDIT] Synthetic training audit completion signal suppressed', {
+        auditId: audit?.id || null,
+        tenantId: audit?.tenant_id || null,
+      });
+      return;
+    }
     const finalStatus = String(summary?.finalStatus || '');
     if (!audit?.id || audit?.status !== 'completed') return;
     if (finalStatus !== 'complete_with_findings' && finalStatus !== 'complete_no_findings') return;
@@ -1030,6 +1092,10 @@ class AuditRunService {
     previousAudit: any | null;
     hasRecoveryWorkspace: boolean;
   }) {
+    const syntheticExecution = resolveSyntheticAuditContextFromRecord(input.audit, input.summary);
+    if (syntheticExecution) {
+      throw new Error('Synthetic training audits cannot persist commercial outcomes.');
+    }
     const decision: CommercialDecision = classifyCommercialDecision({
       currentAudit: input.audit as AuditRecordLike,
       currentSummary: input.summary,
@@ -1120,22 +1186,24 @@ class AuditRunService {
 
     return (data || []).map((audit, index) => {
       const timestamp = audit.completed_at || audit.started_at || audit.created_at;
+      const syntheticTraining = Boolean(resolveSyntheticAuditContextFromRecord(audit, audit.summary));
       return {
         id: audit.id,
         month: monthKey(timestamp),
         monthLabel: monthLabel(timestamp),
         label: auditHistoryLabel(timestamp),
         status: audit.status,
-        finalStatus: audit.summary?.finalStatus || null,
+        finalStatus: syntheticTraining ? 'synthetic_training_only' : (audit.summary?.finalStatus || null),
         created_at: audit.created_at,
         started_at: audit.started_at || null,
         completed_at: audit.completed_at,
         sourceType: audit.source_type || 'sp_api',
         recordsReviewed: audit.summary?.recordsReviewed ?? null,
-        findingsCount: audit.summary?.findingsCount ?? 0,
-        scopeValue: audit.summary?.scopeValue ?? 0,
-        commercialState: audit.commercial_state || null,
-        commercialRoute: audit.commercial_route || null,
+        findingsCount: syntheticTraining ? 0 : (audit.summary?.findingsCount ?? 0),
+        scopeValue: syntheticTraining ? 0 : (audit.summary?.scopeValue ?? 0),
+        commercialState: syntheticTraining ? null : (audit.commercial_state || null),
+        commercialRoute: syntheticTraining ? null : (audit.commercial_route || null),
+        syntheticTraining,
         isLatest: index === 0,
       };
     });
@@ -1143,7 +1211,12 @@ class AuditRunService {
 
   async runAudit(auditId: string, userId: string) {
     const audit = await this.getAudit(auditId, userId);
+    const syntheticExecution = resolveSyntheticAuditContextFromRecord(audit, audit.summary);
+    const syntheticTraining = Boolean(syntheticExecution);
     if (audit.status === 'completed') {
+      if (syntheticTraining) {
+        return audit;
+      }
       if (audit.commercial_state) {
         return audit;
       }
@@ -1299,14 +1372,20 @@ class AuditRunService {
 
   async getResults(auditId: string, userId: string, tenantId?: string | null) {
     const audit = await this.getAudit(auditId, userId, tenantId);
-    const syncStatus = audit.sync_id
+    const syntheticExecution = resolveSyntheticAuditContextFromRecord(audit, audit.summary);
+    const syntheticTraining = Boolean(syntheticExecution);
+    const rawSyncStatus = audit.sync_id
       ? await this.getSyncStatus(audit.sync_id, audit.user_id, audit.tenant_id, audit.store_id)
       : null;
+    const syncStatus = syntheticExecution
+      ? { ...(rawSyncStatus || {}), metadata: { ...(rawSyncStatus?.metadata || {}), ...syntheticTrainingSummaryFields() } }
+      : rawSyncStatus;
     const summary = audit.status === 'completed' && audit.sync_id
       ? await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus, audit.source_type)
       : (audit.summary || EMPTY_SUMMARY);
+    const safeSummary = syntheticTraining ? withSyntheticTrainingSummary(summary) : summary;
     const teaserSummary = {
-      ...summary,
+      ...safeSummary,
       commercialState: audit.commercial_state || summary.commercialState,
       commercialRoute: audit.commercial_route || summary.commercialRoute,
       commercialReason: audit.commercial_reason || summary.commercialReason,
@@ -1323,6 +1402,29 @@ class AuditRunService {
     };
 
     if (audit.status === 'completed') {
+      if (syntheticTraining) {
+        return {
+          audit: {
+            id: audit.id,
+            status: audit.status,
+            activation_status: audit.activation_status,
+            sync_id: audit.sync_id,
+            started_at: audit.started_at,
+            completed_at: audit.completed_at,
+            first_useful_result_at: audit.first_useful_result_at || null,
+          },
+          teaser: {
+            ...teaserSummary,
+            locked: true,
+            activationRequired: false,
+          },
+          commercial: {
+            suppressed: true,
+            reason: 'SYNTHETIC_TRAINING_ONLY',
+          }
+        };
+      }
+
       if (!audit.first_useful_result_at) {
         const firstUsefulResult = deriveFirstUsefulResult(teaserSummary);
         const firstUsefulResultAt = audit.completed_at || new Date().toISOString();
@@ -1400,6 +1502,9 @@ class AuditRunService {
 
   async getControlStatement(auditId: string, userId: string, tenantId?: string | null) {
     const audit = await this.getAudit(auditId, userId, tenantId);
+    if (resolveSyntheticAuditContextFromRecord(audit, audit.summary)) {
+      throw new Error('Synthetic training audits cannot expose control statements.');
+    }
     const controlStatement = await this.getControlStatementByAuditId(audit.id);
 
     if (!controlStatement) {
@@ -1471,6 +1576,9 @@ class AuditRunService {
 
   async getExportSummary(auditId: string, userId: string, tenantId?: string | null) {
     const audit = await this.getAudit(auditId, userId, tenantId);
+    if (resolveSyntheticAuditContextFromRecord(audit, audit.summary)) {
+      throw new Error('Synthetic training audits cannot produce reporting exports.');
+    }
     const result = await this.getResults(auditId, userId, tenantId);
     const summary = result.teaser;
     const findings = audit.sync_id
@@ -1516,6 +1624,15 @@ class AuditRunService {
     const summary = audit.summary || EMPTY_SUMMARY;
     const events: Array<{ timestamp: string; category: string; status: string; message: string }> = [];
     const started = audit.started_at || audit.created_at || new Date().toISOString();
+
+    if (resolveSyntheticAuditContextFromRecord(audit, summary)) {
+      return [{
+        timestamp: audit.completed_at || audit.updated_at || started,
+        category: 'Synthetic training',
+        status: audit.status === 'completed' ? 'completed' : 'running',
+        message: 'SYNTHETIC TRAINING ONLY — no Amazon seller data, recovery conclusion, commercial action, or filing outcome is represented.',
+      }];
+    }
 
     events.push({
       timestamp: started,
@@ -1922,8 +2039,13 @@ class AuditRunService {
       findingsCount: rows.length,
       sourcesUnavailable,
     });
+    const syntheticExecution = resolveTrustedSyntheticAuditExecutionContext(tenantId, syncId, {
+      executionProvenance: metadata.executionProvenance,
+      syntheticTraining: metadata.syntheticTraining,
+    });
+    const syntheticTraining = Boolean(syntheticExecution);
 
-    return {
+    const summary: AuditSummary = {
       scopeValue,
       findingsCount: rows.length,
       categories,
@@ -1937,6 +2059,8 @@ class AuditRunService {
       sourcesUnavailable,
       retryable: truth.retryable
     };
+
+    return syntheticTraining ? withSyntheticTrainingSummary(summary) : summary;
   }
 
   private async getFindingSummaries(userId: string, tenantId: string, syncId: string) {

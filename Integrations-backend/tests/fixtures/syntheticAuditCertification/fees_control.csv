@@ -1,0 +1,3 @@
+# SYNTHETIC_TRAINING_ONLY scenario=SYN-CONTROL-001 revision=01
+FeeType,FeeAmount,PostedDate,CurrencyCode,EventId,AmazonOrderId,SellerSKU,ASIN,Reference ID
+FBAFee,-12.00,2026-07-02T11:05:00Z,USD,SYN-FEE-001,SYN-ORDER-002,SYN-SKU-B,SYN-ASIN-B,SYN-FEE-REF-001

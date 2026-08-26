@@ -1,0 +1,3 @@
+# SYNTHETIC_TRAINING_ONLY scenario=SYN-PARSER-002 revision=01
+AmazonOrderId,PurchaseDate,OrderStatus,OrderTotal
+SYN-ORDER-INVALID-002,2026-07-01T10:00:00Z,Shipped,120.00,unexpected

@@ -1,0 +1,4 @@
+# SYNTHETIC_TRAINING_ONLY scenario=SYN-CONTROL-001 revision=01
+EventType,PostedDate,Amount,CurrencyCode,AdjustmentEventId,AmazonOrderId,SellerSKU,ASIN,Quantity,FulfillmentCenterId,Description
+Reimbursement,2026-07-06T13:05:00Z,120.00,USD,SYN-EVENT-REIMB-001,SYN-ORDER-001,SYN-SKU-A,SYN-ASIN-A,1,SYN-FC-1,Synthetic matched reimbursement for training only
+Fee,2026-07-02T11:05:00Z,-12.00,USD,SYN-EVENT-FEE-001,SYN-ORDER-002,SYN-SKU-B,SYN-ASIN-B,1,SYN-FC-2,Synthetic fee for training only

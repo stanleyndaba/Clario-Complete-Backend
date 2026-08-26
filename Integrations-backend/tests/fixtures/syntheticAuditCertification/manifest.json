@@ -1,0 +1,61 @@
+{
+  "fixture_pack": "Margin Synthetic Audit Mechanism Certification",
+  "version": 1,
+  "provenance": "SYNTHETIC_TRAINING_ONLY",
+  "purpose": "Parser, normalizer, ingestion-contract, and audit-input certification. Not seller data; not provider data; not reimbursement, claim, recovery, payment, or commercial evidence.",
+  "forbidden_assertions": [
+    "live_amazon_provider_certification",
+    "seller_recovery_exists",
+    "claim_capable",
+    "paid_or_recovered_value",
+    "transfer_semantics",
+    "transfer_economic_value",
+    "commercial_eligibility"
+  ],
+  "scenarios": [
+    {
+      "id": "SYN-CONTROL-001",
+      "kind": "canonical_consistent_manual_upload_inputs",
+      "expected_ingestion": "accepted_when_each_source_is_uploaded_with_explicit_type_and_detection_disabled",
+      "expected_detection_or_audit": "NOT_ASSERTED_BY_THIS_FIXTURE_PACK",
+      "files": [
+        "orders_control.csv",
+        "shipments_control.csv",
+        "returns_control.csv",
+        "settlements_control.csv",
+        "financial_events_control.csv",
+        "fees_control.csv",
+        "inventory_ledger_control.txt"
+      ]
+    },
+    {
+      "id": "SYN-PARSER-001",
+      "kind": "malformed_duplicate_normalized_header",
+      "expected_ingestion": "rejected_before_persistence_or_detection",
+      "expected_detection_or_audit": "NOT_RUN",
+      "files": ["orders_duplicate_normalized_header.csv"]
+    },
+    {
+      "id": "SYN-PARSER-002",
+      "kind": "malformed_inconsistent_column_count",
+      "expected_ingestion": "rejected_before_persistence_or_detection",
+      "expected_detection_or_audit": "NOT_RUN",
+      "files": ["orders_extra_column.csv"]
+    },
+    {
+      "id": "SYN-DUPLICATE-001",
+      "kind": "same_content_reupload",
+      "expected_ingestion": "first_upload_accepted_second_upload_duplicate_skipped",
+      "expected_detection_or_audit": "NOT_RUN",
+      "files": ["orders_control.csv"]
+    }
+  ],
+  "transfer_status": {
+    "enabled": false,
+    "rollout_percent": 0,
+    "claim_capable": false,
+    "p3": "UNRESOLVED",
+    "p120": "BLOCKED — P3_PROVIDER_SEMANTICS_UNRESOLVED",
+    "fixture_policy": "No transfer fixture is included or permitted."
+  }
+}

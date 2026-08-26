@@ -6,6 +6,11 @@ import csvIngestionService, { CsvUploadRunSnapshot } from '../services/csvIngest
 import { timelineService } from '../services/timelineService';
 import { enrichDetectionFinding } from '../services/detectionFindingTruthService';
 import { getDetectorCoverageMap } from '../services/detection/detectorCoverageMapService';
+import {
+  resolveTrustedSyntheticAuditExecutionContext,
+  SYNTHETIC_TRAINING_PROVENANCE,
+  SYNTHETIC_TRAINING_SYNC_PREFIX,
+} from '../services/syntheticAuditExecutionContext';
 
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -191,6 +196,19 @@ router.post('/run', async (req: AuthenticatedRequest, res) => {
     if (!syncId) {
       return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'syncId is required' } });
     }
+    const requestedSynthetic = String(syncId).startsWith(SYNTHETIC_TRAINING_SYNC_PREFIX) ||
+      metadata?.syntheticExecution !== undefined ||
+      metadata?.executionProvenance === SYNTHETIC_TRAINING_PROVENANCE ||
+      metadata?.execution_provenance === SYNTHETIC_TRAINING_PROVENANCE;
+    if (requestedSynthetic) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'SYNTHETIC_ROUTE_REQUIRED',
+          message: 'Synthetic detection execution is available only through the dedicated training CSV route.',
+        },
+      });
+    }
     await enhancedDetectionService.triggerDetectionPipeline(userId, syncId, triggerType, metadata);
     return res.json({ success: true, job: { sync_id: syncId, trigger_type: triggerType } });
   } catch (error: any) {
@@ -289,13 +307,23 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
       const { data: queueRows } = await supabaseAdmin
         .from('detection_queue')
         .select('id, sync_id, status, processed_at, created_at, error_message, payload')
+        .eq('tenant_id', tenantId)
         .eq('seller_id', userId)
         .eq('sync_id', filteredSyncId)
         .order('created_at', { ascending: false })
         .limit(10);
 
       const queueRow = selectAuthoritativeQueueRow(queueRows as DetectionQueueStatusRow[] | null | undefined);
-      const csvRun = filteredSyncId.startsWith('csv_')
+      let syntheticExecution = null;
+      try {
+        syntheticExecution = resolveTrustedSyntheticAuditExecutionContext(tenantId, filteredSyncId, queueRow?.payload);
+      } catch (error: any) {
+        return res.status(409).json({
+          success: false,
+          error: { code: 'SYNTHETIC_PROVENANCE_REQUIRED', message: error?.message || 'Synthetic execution provenance could not be verified.' },
+        });
+      }
+      const csvRun = (filteredSyncId.startsWith('csv_') || filteredSyncId.startsWith(SYNTHETIC_TRAINING_SYNC_PREFIX))
         ? await csvIngestionService.getCsvUploadRunBySyncId(userId, tenantId, filteredSyncId)
         : null;
       const csvMeta = buildCsvRunDetectionMeta(csvRun);
@@ -307,6 +335,8 @@ router.get('/results', async (req: AuthenticatedRequest, res) => {
         processedAt: preferredCsvMeta?.processedAt || queueRow?.processed_at || null,
         errorMessage: preferredCsvMeta?.errorMessage || queueRow?.error_message || null,
         isSandbox: preferredCsvMeta?.isSandbox || getDetectionQueueSandboxFlag(queueRow),
+        syntheticTraining: Boolean(syntheticExecution),
+        executionProvenance: syntheticExecution?.provenance || null,
       };
     }
 
@@ -346,13 +376,23 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
     const { data: queueRows } = await supabaseAdmin
       .from('detection_queue')
       .select('id, sync_id, status, processed_at, created_at, error_message, payload')
+      .eq('tenant_id', tenantId)
       .eq('seller_id', userId)
       .eq('sync_id', syncId)
       .order('created_at', { ascending: false })
       .limit(10);
 
     const queueRow = selectAuthoritativeQueueRow(queueRows as DetectionQueueStatusRow[] | null | undefined);
-    const csvRun = syncId.startsWith('csv_')
+    let syntheticExecution = null;
+    try {
+      syntheticExecution = resolveTrustedSyntheticAuditExecutionContext(tenantId, syncId, queueRow?.payload);
+    } catch (error: any) {
+      return res.status(409).json({
+        success: false,
+        error: { code: 'SYNTHETIC_PROVENANCE_REQUIRED', message: error?.message || 'Synthetic execution provenance could not be verified.' },
+      });
+    }
+    const csvRun = (syncId.startsWith('csv_') || syncId.startsWith(SYNTHETIC_TRAINING_SYNC_PREFIX))
       ? await csvIngestionService.getCsvUploadRunBySyncId(userId, tenantId, syncId)
       : null;
     const csvMeta = buildCsvRunDetectionMeta(csvRun);
@@ -371,6 +411,8 @@ router.get('/status/:syncId', async (req: AuthenticatedRequest, res) => {
       processed_at: preferredCsvMeta?.processedAt || queueRow?.processed_at || null,
       error_message: preferredCsvMeta?.errorMessage || queueRow?.error_message || null,
       is_sandbox: preferredCsvMeta?.isSandbox || getDetectionQueueSandboxFlag(queueRow),
+      synthetic_training: Boolean(syntheticExecution),
+      execution_provenance: syntheticExecution?.provenance || null,
       results: {
         claimsFound,
         estimatedRecovery,

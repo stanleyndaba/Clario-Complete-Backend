@@ -14,6 +14,12 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import { buildDetectionQueuePayload } from './detectionQueueContract';
 import {
+    SYNTHETIC_TRAINING_SYNC_PREFIX,
+    createSyntheticAuditExecutionContext,
+    validateSyntheticAuditExecutionContext,
+    type SyntheticAuditExecutionContext,
+} from './syntheticAuditExecutionContext';
+import {
     buildCanonicalFinancialEventRow,
     classifyFinancialEventType,
     parseCurrencyAmount
@@ -697,6 +703,20 @@ export class CSVIngestionService {
     /**
      * Ingest multiple CSV files for a user
      */
+    async ingestSyntheticTrainingFiles(
+        userId: string,
+        files: { buffer: Buffer; originalname: string; mimetype: string }[],
+        options: {
+            explicitType?: CSVType;
+            triggerDetection?: boolean;
+            storeId?: string;
+            tenantId: string;
+        }
+    ): Promise<BatchIngestionResult> {
+        const syntheticExecution = createSyntheticAuditExecutionContext(options.tenantId);
+        return this.ingestFiles(userId, files, { ...options, syntheticExecution });
+    }
+
     async ingestFiles(
         userId: string,
         files: { buffer: Buffer; originalname: string; mimetype: string }[],
@@ -705,6 +725,7 @@ export class CSVIngestionService {
             triggerDetection?: boolean;
             storeId?: string;
             tenantId?: string;
+            syntheticExecution?: SyntheticAuditExecutionContext;
         } = {}
     ): Promise<BatchIngestionResult> {
         if (!options.tenantId) {
@@ -712,11 +733,17 @@ export class CSVIngestionService {
         }
 
         const tenantId = options.tenantId;
-        const syncId = `csv_${Date.now()}`;
+        const syntheticExecution = options.syntheticExecution;
+        if (syntheticExecution) {
+            validateSyntheticAuditExecutionContext(tenantId, syntheticExecution);
+        }
+        const syncId = syntheticExecution
+            ? `${SYNTHETIC_TRAINING_SYNC_PREFIX}${Date.now()}`
+            : `csv_${Date.now()}`;
         const results: IngestionResult[] = [];
         const triggerDetection = options.triggerDetection !== false;
         const runStartedAt = new Date().toISOString();
-        const isSandbox = this.getCsvUploadSandboxFlag();
+        const isSandbox = Boolean(syntheticExecution) || this.getCsvUploadSandboxFlag();
 
         logger.info('📂 [CSV INGESTION] Starting batch ingestion', {
             userId,
@@ -798,7 +825,7 @@ export class CSVIngestionService {
             }
 
             try {
-                detectionJobId = await this.triggerDetection(userId, syncId, tenantId);
+                detectionJobId = await this.triggerDetection(userId, syncId, tenantId, syntheticExecution);
                 logger.info('🔍 [CSV INGESTION] Detection triggered after CSV import', {
                     userId,
                     syncId,
@@ -2846,9 +2873,14 @@ export class CSVIngestionService {
     /**
      * Trigger Agent 3 detection pipeline after CSV data is ingested
      */
-    private async triggerDetection(userId: string, syncId: string, tenantId: string): Promise<string> {
+    private async triggerDetection(
+        userId: string,
+        syncId: string,
+        tenantId: string,
+        syntheticExecution?: SyntheticAuditExecutionContext,
+    ): Promise<string> {
         const jobId = `csv_detection_${userId}_${Date.now()}`;
-        const isSandbox = this.getCsvUploadSandboxFlag();
+        const isSandbox = Boolean(syntheticExecution) || this.getCsvUploadSandboxFlag();
         let failureStatusRecorded = false;
 
         try {
@@ -2859,8 +2891,9 @@ export class CSVIngestionService {
                     engine: 'enhanced',
                     job_id: jobId,
                     detection_phase: 'triggered',
+                    ...(syntheticExecution ? { execution_provenance: syntheticExecution.provenance } : {}),
                 },
-            });
+            }, syntheticExecution);
 
             // Try EnhancedDetectionService first (production flagship detector set)
             const { EnhancedDetectionService } = await import('./enhancedDetectionService');
@@ -2874,7 +2907,8 @@ export class CSVIngestionService {
                     tenantId,
                     syncId,
                     source_type: 'csv_upload',
-                    trigger_type: 'csv_upload'
+                    trigger_type: 'csv_upload',
+                    syntheticExecution,
                 }
             );
 
@@ -2893,7 +2927,7 @@ export class CSVIngestionService {
                         detectionsFound: result.detectionsFound || 0,
                         estimatedRecovery: result.estimatedRecovery || 0,
                     },
-                });
+                }, syntheticExecution);
                 failureStatusRecorded = true;
                 throw new Error(result.message || 'Enhanced detection pipeline returned unsuccessful state.');
             }
@@ -2918,7 +2952,7 @@ export class CSVIngestionService {
                         estimatedRecovery: result.estimatedRecovery || 0,
                         persisted_results_count: persistedResultsCount,
                     },
-                });
+                }, syntheticExecution);
                 failureStatusRecorded = true;
                 throw new Error(persistenceError);
             }
@@ -2934,9 +2968,18 @@ export class CSVIngestionService {
                     estimatedRecovery: result.estimatedRecovery || 0,
                     persisted_results_count: persistedResultsCount,
                 },
-            });
+            }, syntheticExecution);
 
-            await this.emitPersistedDetectionEvents(userId, tenantId, syncId, result.jobId);
+            if (!syntheticExecution) {
+                await this.emitPersistedDetectionEvents(userId, tenantId, syncId, result.jobId);
+            } else {
+                logger.info('🧪 [CSV INGESTION] Synthetic training detection completed without commercial event emission', {
+                    tenantId,
+                    userId,
+                    syncId,
+                    provenance: syntheticExecution.provenance,
+                });
+            }
 
             logger.info('🔍 [CSV INGESTION] Enhanced detection pipeline triggered', {
                 userId,
@@ -2966,7 +3009,7 @@ export class CSVIngestionService {
                             fallback_used: false,
                             failure_reason: error.message || 'Enhanced detection pipeline failed.',
                         },
-                    });
+                    }, syntheticExecution);
                 } catch (statusError: any) {
                     logger.error('❌ [CSV INGESTION] Failed to persist detection failure status', {
                         userId,
@@ -3155,7 +3198,8 @@ export class CSVIngestionService {
             isSandbox?: boolean;
             errorMessage?: string;
             payload?: Record<string, any>;
-        } = {}
+        } = {},
+        syntheticExecution?: SyntheticAuditExecutionContext,
     ): Promise<void> {
         const nowIso = new Date().toISOString();
         const payload = buildDetectionQueuePayload(
@@ -3171,6 +3215,8 @@ export class CSVIngestionService {
                 ...(options.jobId ? { job_id: options.jobId } : {}),
                 ...(options.isSandbox !== undefined ? { is_sandbox: !!options.isSandbox } : {}),
                 ...(options.payload || {}),
+                // The caller-provided detail payload must never override server-issued provenance.
+                ...(syntheticExecution ? { execution_provenance: syntheticExecution.provenance } : {}),
             }
         );
 

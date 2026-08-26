@@ -21,6 +21,7 @@ import capacityGovernanceService from '../services/capacityGovernanceService';
 import operationalControlService from '../services/operationalControlService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import auditRunService from '../services/auditRunService';
+import { SYNTHETIC_TRAINING_PROVENANCE } from '../services/syntheticAuditExecutionContext';
 
 const router = Router();
 const CSV_UPLOAD_BREAKER_BYPASS = ['filing-auto-dispatch'] as const;
@@ -178,6 +179,63 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
             success: false,
             error: 'CSV upload failed',
             details: error.message,
+        });
+    }
+});
+
+// ============================================================================
+// POST /api/csv-upload/synthetic-training/ingest — Isolated synthetic CSV/TXT certification
+// ============================================================================
+
+router.post('/synthetic-training/ingest', requireActiveTenant, upload.array('files', 10), async (req: Request, res: Response) => {
+    try {
+        if (!isRealDatabaseConfigured) {
+            return res.status(503).json({ success: false, error: 'Synthetic training ingestion requires the configured training database scope.' });
+        }
+
+        const userId = (req as any).userId;
+        const tenantId = (req as any).tenant?.tenantId as string | undefined;
+        if (!userId || !tenantId) {
+            return res.status(401).json({ success: false, error: 'Authenticated training user and tenant context are required.' });
+        }
+
+        const provenance = String(req.headers['x-margin-execution-provenance'] || '').trim();
+        if (provenance !== SYNTHETIC_TRAINING_PROVENANCE) {
+            return res.status(403).json({
+                success: false,
+                error: 'Synthetic training execution requires the SYNTHETIC_TRAINING_ONLY provenance header.',
+            });
+        }
+
+        const files = (req.files || []) as { buffer: Buffer; originalname: string; size: number; mimetype: string }[];
+        if (files.length === 0) {
+            return res.status(400).json({ success: false, error: 'No synthetic fixture files uploaded.' });
+        }
+
+        const storeId = req.headers['x-store-id'] as string | undefined;
+        const result = await csvIngestionService.ingestSyntheticTrainingFiles(userId, files, {
+            triggerDetection: req.query.detect !== 'false' && req.body?.detect !== 'false',
+            storeId,
+            tenantId,
+        });
+        const manualAudit = result.success
+            ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId, auditIntentId: null })
+            : null;
+
+        return res.status(result.success ? 200 : 207).json({
+            ...result,
+            manualAudit,
+            training: {
+                provenance: SYNTHETIC_TRAINING_PROVENANCE,
+                label: 'SYNTHETIC TRAINING ONLY',
+                commercialSuppressed: true,
+            },
+        });
+    } catch (error: any) {
+        logger.warn('🧪 [CSV UPLOAD] Synthetic training ingestion rejected or failed', { error: error?.message || String(error) });
+        return res.status(403).json({
+            success: false,
+            error: error?.message || 'Synthetic training ingestion was rejected.',
         });
     }
 });

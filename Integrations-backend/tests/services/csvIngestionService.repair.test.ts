@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   CSVIngestionService,
   detectManualAuditDelimiter,
@@ -173,6 +175,46 @@ describe('CSV ingestion repair', () => {
     Object.keys(inserts).forEach(k => delete inserts[k]);
     csvRuns.length = 0;
     csvUploadRuns.length = 0;
+  });
+
+  it('ingests the canonical synthetic control fixture pack through every non-Transfer source mapper', async () => {
+    const fixtureDirectory = path.resolve(__dirname, '../fixtures/syntheticAuditCertification');
+    const fixtureSources: Array<{ fileName: string; csvType: any }> = [
+      { fileName: 'orders_control.csv', csvType: 'orders' },
+      { fileName: 'shipments_control.csv', csvType: 'shipments' },
+      { fileName: 'returns_control.csv', csvType: 'returns' },
+      { fileName: 'settlements_control.csv', csvType: 'settlements' },
+      { fileName: 'financial_events_control.csv', csvType: 'financial_events' },
+      { fileName: 'fees_control.csv', csvType: 'fees' },
+      { fileName: 'inventory_ledger_control.txt', csvType: 'inventory' },
+    ];
+
+    for (const fixture of fixtureSources) {
+      const result = await service.ingestFiles(
+        userId,
+        [{
+          buffer: Buffer.from(fs.readFileSync(path.join(fixtureDirectory, fixture.fileName), 'utf8')),
+          originalname: fixture.fileName,
+          mimetype: fixture.fileName.endsWith('.txt') ? 'text/plain' : 'text/csv',
+        }],
+        { explicitType: fixture.csvType, triggerDetection: false, tenantId }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.results[0]).toMatchObject({
+        csvType: fixture.csvType,
+        detectionTriggered: false,
+      });
+      expect(result.results[0].rowsInserted).toBeGreaterThan(0);
+    }
+
+    expect(inserts.orders?.some((row) => row.order_id === 'SYN-ORDER-001')).toBe(true);
+    expect(inserts.shipments?.some((row) => row.shipment_id === 'SYN-SHIP-001')).toBe(true);
+    expect(inserts.returns?.some((row) => row.return_id === 'SYN-RETURN-001')).toBe(true);
+    expect(inserts.settlements?.some((row) => row.settlement_id === 'SYN-SETTLEMENT-002')).toBe(true);
+    expect(inserts.financial_events?.some((row) => row.amazon_event_id === 'SYN-EVENT-REIMB-001')).toBe(true);
+    expect(inserts.inventory_ledger_events?.some((row) => row.reference_id === 'SYN-LEDGER-RECEIPT-001')).toBe(true);
+    expect(inserts.inventory_transfers).toBeUndefined();
   });
 
   it('enforces tenant scoped orders writes', async () => {

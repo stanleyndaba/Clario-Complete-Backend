@@ -11,6 +11,10 @@ import { financialImpactService, ImpactStatus } from './financialImpactService';
 import { calculateCalibratedConfidence } from './detection/confidenceCalibrator';
 import { getAdaptiveDetectionDecision } from './closedLoopIntelligenceService';
 import { generateInsights } from './detection/patternAnalyzer';
+import {
+  validateSyntheticAuditExecutionContext,
+  type SyntheticAuditExecutionContext,
+} from './syntheticAuditExecutionContext';
 
 // =====================================================
 // PRODUCTION REGISTRY (AGENT 3 CORE)
@@ -408,6 +412,9 @@ export class EnhancedDetectionService {
     metadata: any
   ): Promise<{ success: boolean; jobId: string; message: string; detectionsFound?: number; estimatedRecovery?: number }> {
     const jobId = `detection-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const syntheticExecution: SyntheticAuditExecutionContext | undefined = metadata?.syntheticExecution === undefined
+      ? undefined
+      : validateSyntheticAuditExecutionContext(String(metadata?.tenantId || ''), metadata.syntheticExecution);
 
     logger.info('🧠 [AGENT3] Production pipeline triggered (Frozen Flagships Only)', {
       userId,
@@ -446,8 +453,19 @@ export class EnhancedDetectionService {
       const inboundRes = await runInboundDetection(userId, syncId);
 
       // 6. Transfer Loss (Warehouse Moves)
-      logger.info('🏭 [AGENT3] Auditing Warehouse Transfers...');
-      const transferRes = await runTransferLossDetection(userId, syncId);
+      // Transfer semantics remain independently fail-closed and are never invoked in training execution.
+      const transferRes = syntheticExecution
+        ? []
+        : await runTransferLossDetection(userId, syncId);
+      if (syntheticExecution) {
+        logger.info('🧪 [AGENT3] Synthetic training run skipped Transfer detection by policy', {
+          userId,
+          syncId,
+          provenance: syntheticExecution.provenance,
+        });
+      } else {
+        logger.info('🏭 [AGENT3] Auditing Warehouse Transfers...');
+      }
 
       // 7. The Sentinel (Integrity)
       logger.info('🔍 [AGENT3] Activating the Sentinel...');
@@ -509,8 +527,8 @@ export class EnhancedDetectionService {
       const grossEstimatedRecovery = overlapAdjudication.results.reduce((sum, r) => sum + (r.estimated_value || 0), 0);
       const estimatedRecovery = overlapAdjudication.adjustedRecovery;
 
-      // Record Financial Impact
-      if (detectionsFound > 0) {
+      // Training execution runs the same non-Transfer detector logic, but never records seller economic impact or insights.
+      if (!syntheticExecution && detectionsFound > 0) {
         await financialImpactService.recordImpact({
           userId,
           detectionId: jobId,
@@ -523,8 +541,9 @@ export class EnhancedDetectionService {
         });
       }
 
-      // Generate Seller Insights (Async)
-      generateInsights(userId).catch(() => {});
+      if (!syntheticExecution) {
+        generateInsights(userId).catch(() => {});
+      }
 
       logger.info('🏁 [AGENT3] Production pipeline complete!', {
         userId,
