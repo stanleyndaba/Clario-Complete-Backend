@@ -9,6 +9,7 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'u
 
 const documentsRoute = read('src/routes/documentsRoutes.ts');
 const evidenceRoute = read('src/routes/evidenceRoutes.ts');
+const databaseClient = read('src/database/supabaseClient.ts');
 const assertions = [];
 const check = (condition, description) => {
   assert.ok(condition, description);
@@ -16,6 +17,12 @@ const check = (condition, description) => {
 };
 
 check(documentsRoute.includes("router.post('/upload', upload.any()"), 'verified multipart upload route remains available');
+check(databaseClient.includes('let supabaseStorage: SupabaseClient | any;'), 'a dedicated object-storage client is retained alongside database adapters');
+check(databaseClient.includes('Supabase storage client created alongside PostgreSQL data adapter'), 'PostgreSQL-backed production initializes a separate storage client');
+check(databaseClient.includes('process.env.SUPABASE_KEY'), 'the legacy Render Supabase key alias is considered for storage configuration');
+check(documentsRoute.includes('function getEvidenceStorageClient()'), 'upload resolves a storage-capable client rather than assuming the database adapter has storage');
+check(documentsRoute.includes("error: 'Evidence storage is unavailable'"), 'upload fails safely and explicitly when storage is not configured');
+check(documentsRoute.includes('await storageClient\n                .storage\n                .from(DOCUMENT_BUCKET_NAME)'), 'upload writes through the resolved storage client');
 check(documentsRoute.includes(".eq('tenant_id', tenantId)"), 'document route continues to scope sensitive operations to the active tenant');
 check(documentsRoute.includes("router.post('/:id/archive'"), 'archive lifecycle route is present');
 check(documentsRoute.includes("router.post('/:id/supersede'"), 'supersession lifecycle route is present');

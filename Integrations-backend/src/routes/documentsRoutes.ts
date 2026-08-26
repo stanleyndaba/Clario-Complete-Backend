@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
+import { supabase, supabaseAdmin, supabaseStorage, convertUserIdToUuid } from '../database/supabaseClient';
 import logger from '../utils/logger';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
@@ -58,9 +58,14 @@ function buildSafeStorageFilename(originalFilename: string): string {
     return `${fallbackBase}${safeExtension}`;
 }
 
-async function ensureEvidenceDocumentsBucket(): Promise<void> {
-    const storageClient = supabaseAdmin || supabase;
+function getEvidenceStorageClient(): any | null {
+    if (supabaseStorage?.storage) return supabaseStorage;
+    if (supabaseAdmin?.storage) return supabaseAdmin;
+    if (supabase?.storage) return supabase;
+    return null;
+}
 
+async function ensureEvidenceDocumentsBucket(storageClient: any): Promise<void> {
     try {
         const { data: buckets, error: listError } = await storageClient.storage.listBuckets();
 
@@ -322,7 +327,16 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             filenames: files.map(f => f.originalname)
         });
 
-        await ensureEvidenceDocumentsBucket();
+        const storageClient = getEvidenceStorageClient();
+        if (!storageClient) {
+            return res.status(503).json({
+                success: false,
+                error: 'Evidence storage is unavailable',
+                message: 'The artifact was not stored because the configured object-storage client is unavailable.'
+            });
+        }
+
+        await ensureEvidenceDocumentsBucket(storageClient);
 
         // Extract tenant ID
         const tenantId = (req as any).tenant?.tenantId;
@@ -345,7 +359,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
             const storagePath = `${tenantId}/${docId}/${safeStorageFilename}`;
 
             // Upload to Supabase Storage
-            const { error: storageError } = await supabaseAdmin
+            const { error: storageError } = await storageClient
                 .storage
                 .from(DOCUMENT_BUCKET_NAME)
                 .upload(storagePath, file.buffer, {
@@ -408,7 +422,7 @@ router.post('/upload', upload.any(), async (req: Request, res: Response) => {
                     reason: `Database insert failed: ${dbError.message}`
                 });
                 // Try to clean up storage
-                await supabaseAdmin.storage.from(DOCUMENT_BUCKET_NAME).remove([storagePath]);
+                await storageClient.storage.from(DOCUMENT_BUCKET_NAME).remove([storagePath]);
                 continue;
             }
 

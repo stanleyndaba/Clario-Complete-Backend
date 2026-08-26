@@ -6,14 +6,18 @@ import { createPostgresSupabaseAdapter } from './postgresSupabaseAdapter';
 const supabaseUrl = config.SUPABASE_URL;
 const supabaseAnonKey = config.SUPABASE_ANON_KEY;
 const supabaseServiceRoleKey = config.SUPABASE_SERVICE_ROLE_KEY;
+// Legacy Render deployments provision this key name; prefer a service role when one is configured.
+const supabaseStorageKey = supabaseServiceRoleKey || supabaseAnonKey || process.env.SUPABASE_KEY;
 const hasRealSupabaseUrl = !!supabaseUrl && !supabaseUrl.includes('demo-');
-const hasAnySupabaseKey = !!supabaseServiceRoleKey || !!supabaseAnonKey;
+const hasAnySupabaseKey = !!supabaseStorageKey;
 
 export const isRealDatabaseConfigured = hasRealSupabaseUrl && hasAnySupabaseKey;
 
 // Create a demo client if Supabase config is missing
 let supabase: SupabaseClient | any;
 let supabaseAdmin: SupabaseClient | any; // Service role client for admin operations
+// Object storage is distinct from the PostgreSQL-backed evidence data adapter.
+let supabaseStorage: SupabaseClient | any;
 
 // Multi-tenant defaults
 const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
@@ -22,6 +26,15 @@ if (config.DATABASE_URL) {
   logger.info('Using PostgreSQL adapter for backend data access via DATABASE_URL');
   supabase = createPostgresSupabaseAdapter(config.DATABASE_URL);
   supabaseAdmin = supabase;
+
+  if (hasRealSupabaseUrl && supabaseStorageKey) {
+    supabaseStorage = createClient(supabaseUrl, supabaseStorageKey, {
+      auth: { autoRefreshToken: false, persistSession: false }
+    });
+    logger.info('Supabase storage client created alongside PostgreSQL data adapter');
+  } else {
+    logger.warn('Supabase storage client unavailable - document uploads will be rejected safely');
+  }
 } else if (!isRealDatabaseConfigured) {
   logger.warn('Using demo Supabase client - no real database connection');
 
@@ -240,6 +253,7 @@ if (config.DATABASE_URL) {
 
   // In demo mode, admin client is same as regular client
   supabaseAdmin = supabase;
+  supabaseStorage = supabase?.storage ? supabase : undefined;
 } else {
   // Validate URL before creating client
   if (!supabaseUrl || typeof supabaseUrl !== 'string' || !supabaseUrl.startsWith('http')) {
@@ -257,6 +271,7 @@ if (config.DATABASE_URL) {
         persistSession: false
       }
     });
+    supabaseStorage = supabaseAdmin;
     logger.info('Supabase admin client created (for storage operations)');
   } else {
     logger.warn('SUPABASE_SERVICE_ROLE_KEY not set - admin operations may be limited');
@@ -267,6 +282,7 @@ if (config.DATABASE_URL) {
       throw new Error('SUPABASE_ANON_KEY must be set in environment variables when SUPABASE_SERVICE_ROLE_KEY is not set.');
     }
     supabase = createClient(supabaseUrl, supabaseAnonKey);
+    supabaseStorage = supabase;
   }
 
   // Prefer admin client for backend operations when available (bypass RLS)
@@ -285,7 +301,7 @@ if (config.DATABASE_URL) {
   });
 }
 
-export { supabase, supabaseAdmin };
+export { supabase, supabaseAdmin, supabaseStorage };
 
 // Database types
 export interface EncryptedToken {
