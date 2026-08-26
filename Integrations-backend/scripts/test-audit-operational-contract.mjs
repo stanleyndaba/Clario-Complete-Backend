@@ -32,6 +32,7 @@ expectIncludes(service, "async getLatestAudit(userId: string, tenantId?: string 
 expectIncludes(service, "query = query.eq('tenant_id', tenantId);", 'Audit service reads must filter by tenant when a tenant is resolved.');
 expectIncludes(service, "async getAuditHistory(userId: string, limit = 18, tenantId?: string | null)", 'Audit history must accept an active tenant scope.');
 expectIncludes(service, "async getSchedule(userId: string, tenantId: string)", 'Schedule lookup must derive from the active workspace, not latest audit state.');
+expectIncludes(service, "lastRunStatus === 'audit_started'", 'Existing started-attempt metadata must surface as a running schedule state.');
 expectIncludes(service, "async saveSchedule(userId: string, tenantId: string", 'Schedule save must bind to an explicit workspace.');
 
 expectIncludes(routes, 'function getResolvedTenantId', 'Audit routes must fail closed without a resolved workspace context.');
@@ -49,10 +50,10 @@ expectIncludes(frontendApi, 'execution: AuditScheduleExecutionStatus;', 'Schedul
 expectIncludes(frontend, 'Automatic execution is not active in this environment.', 'Schedule UI must tell the seller when execution is unavailable.');
 expectIncludes(frontend, 'completion email is not enabled from this schedule.', 'Schedule UI must not imply email delivery.');
 expectIncludes(frontend, 'Margin will not save a new active schedule because it could not run it.', 'Schedule UI must explain the fail-closed behavior.');
-expectIncludes(frontend, 'A recorded summary of the selected audit.', 'Activity UI must distinguish a summary from a live execution log.');
+expectIncludes(frontend, 'A seller-readable record of preparation, coverage, analysis, and result for the selected audit.', 'Activity UI must distinguish the seller lifecycle from a live execution log.');
 expectIncludes(frontend, 'it is not a live event stream.', 'Activity UI must not claim non-existent live streaming.');
 expectExcludes(frontend, 'Live Audit Log', 'The seller UI must not retain the inaccurate Live Audit Log label.');
-expectIncludes(frontend, 'The PDF downloads in this browser.', 'Export UI must state its actual client-side delivery behavior.');
-expectIncludes(frontend, 'Margin does not retain a copy or send the export by email.', 'Export UI must not imply server persistence or email delivery.');
+expectIncludes(frontend, 'It downloads in this browser only;', 'Export UI must state its actual client-side delivery behavior.');
+expectIncludes(frontend, 'Margin does not retain a copy or send it by email.', 'Export UI must not imply server persistence or email delivery.');
 
 console.log(`PASS: ${checks} Audit operational contract assertions`);

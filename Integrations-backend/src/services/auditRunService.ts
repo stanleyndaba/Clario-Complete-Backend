@@ -317,6 +317,85 @@ class AuditRunService {
     };
   }
 
+  private async getScheduleOperatingState(schedule: any | null, tenantId: string, userId: string, entitlement: { entitled?: boolean } | null) {
+    const metadata = typeof schedule?.metadata === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(schedule.metadata);
+          } catch {
+            return {};
+          }
+        })()
+      : (schedule?.metadata || {});
+    const lastRunStatus = String(metadata.last_run_status || '').trim();
+    const lastAuditId = String(metadata.last_audit_id || '').trim() || null;
+    const safeUserId = convertUserIdToUuid(userId);
+
+    let lastAudit: any = null;
+    if (lastAuditId) {
+      const { data } = await supabaseAdmin
+        .from('audit_runs')
+        .select('id, status, source_type, started_at, completed_at, summary')
+        .eq('id', lastAuditId)
+        .eq('tenant_id', tenantId)
+        .eq('user_id', safeUserId)
+        .maybeSingle();
+      lastAudit = data || null;
+    }
+
+    const base = {
+      last_attempt_at: schedule?.last_run_at || null,
+      next_run_at: schedule?.next_run_at || null,
+      last_audit: lastAudit
+        ? {
+            id: lastAudit.id,
+            status: lastAudit.status,
+            source_type: lastAudit.source_type || 'sp_api',
+            started_at: lastAudit.started_at || null,
+            completed_at: lastAudit.completed_at || null,
+            final_status: lastAudit.summary?.finalStatus || null,
+            findings_count: Number(lastAudit.summary?.findingsCount || 0),
+            records_reviewed: lastAudit.summary?.recordsReviewed ?? null,
+            sources_unavailable: Array.isArray(lastAudit.summary?.sourcesUnavailable) ? lastAudit.summary.sourcesUnavailable : [],
+          }
+        : null,
+    };
+
+    if (!schedule || schedule.cadence === 'off') {
+      return { ...base, state: 'off', reason_code: null };
+    }
+
+    if (schedule.is_paused) {
+      return {
+        ...base,
+        state: 'paused',
+        reason_code: String(metadata.paused_reason || (entitlement?.entitled ? 'seller_paused' : 'recovery_workspace_entitlement_inactive')),
+      };
+    }
+
+    if (schedule.lease_owner || lastRunStatus === 'audit_started' || ['created', 'syncing', 'detecting'].includes(String(lastAudit?.status || ''))) {
+      return { ...base, state: 'running', reason_code: null };
+    }
+
+    if (lastAudit?.status === 'completed' || lastAudit?.status === 'activated') {
+      return { ...base, state: 'completed', reason_code: null };
+    }
+
+    if (lastAudit?.status === 'failed') {
+      return { ...base, state: 'failed', reason_code: 'audit_failed' };
+    }
+
+    if (lastAudit?.status === 'amazon_connection_required' || lastRunStatus === 'amazon_connection_required') {
+      return { ...base, state: 'blocked', reason_code: 'amazon_connection_required' };
+    }
+
+    if (lastRunStatus === 'skipped_existing_audit_in_progress') {
+      return { ...base, state: 'skipped', reason_code: lastRunStatus };
+    }
+
+    return { ...base, state: 'awaiting_first_run', reason_code: null };
+  }
+
   private async getWorkspace(userId: string, email?: string | null, preferredTenantSlug?: string | null) {
     return ensureAuthenticatedUserWorkspace({ userId, email, preferredTenantSlug });
   }
@@ -1049,7 +1128,9 @@ class AuditRunService {
         status: audit.status,
         finalStatus: audit.summary?.finalStatus || null,
         created_at: audit.created_at,
+        started_at: audit.started_at || null,
         completed_at: audit.completed_at,
+        sourceType: audit.source_type || 'sp_api',
         recordsReviewed: audit.summary?.recordsReviewed ?? null,
         findingsCount: audit.summary?.findingsCount ?? 0,
         scopeValue: audit.summary?.scopeValue ?? 0,
@@ -1438,84 +1519,68 @@ class AuditRunService {
 
     events.push({
       timestamp: started,
-      category: 'Amazon',
+      category: 'Audit',
       status: 'completed',
       message: audit.status === 'amazon_connection_required'
-        ? 'Margin is waiting for Amazon authorization before it can review account activity.'
-        : 'Margin prepared the audit workspace for this Amazon account.',
+        ? 'Amazon access is required before Margin can examine this audit.'
+        : 'Margin prepared this audit for the selected workspace.',
     });
 
     if (audit.sync_id) {
       events.push({
         timestamp: audit.updated_at || started,
-        category: 'Amazon',
+        category: 'Coverage',
         status: ['syncing', 'detecting', 'completed', 'activated'].includes(audit.status) ? 'completed' : 'pending',
-        message: 'Margin started reviewing Amazon activity for the selected audit period.',
+        message: 'Margin started reviewing the Amazon activity available for this audit.',
       });
     }
 
     if (summary.recordsReviewed != null) {
       events.push({
         timestamp: audit.completed_at || audit.updated_at || started,
-        category: 'Amazon',
+        category: 'Coverage',
         status: 'completed',
-        message: `Margin reviewed ${Number(summary.recordsReviewed || 0).toLocaleString()} Amazon record${Number(summary.recordsReviewed || 0) === 1 ? '' : 's'}.`,
+        message: Number(summary.recordsReviewed || 0) > 0
+          ? `Margin reviewed ${Number(summary.recordsReviewed || 0).toLocaleString()} Amazon record${Number(summary.recordsReviewed || 0) === 1 ? '' : 's'}.`
+          : 'Margin did not receive usable Amazon records for this audit. Review the coverage details before relying on this result.',
       });
     }
 
     if (Array.isArray(summary.sourcesReviewed) && summary.sourcesReviewed.length) {
       events.push({
         timestamp: audit.completed_at || audit.updated_at || started,
-        category: 'Evidence',
+        category: 'Coverage',
         status: 'completed',
-        message: `Sources reviewed: ${summary.sourcesReviewed.join(', ')}.`,
+        message: `Data reviewed: ${summary.sourcesReviewed.join(', ')}.`,
       });
     }
 
     if (Array.isArray(summary.sourcesUnavailable) && summary.sourcesUnavailable.length) {
       events.push({
         timestamp: audit.completed_at || audit.updated_at || started,
-        category: 'Evidence',
+        category: 'Coverage',
         status: 'limited',
-        message: 'Some Amazon datasets were unavailable for this audit.',
+        message: `Coverage was limited because ${summary.sourcesUnavailable.join(', ')} ${summary.sourcesUnavailable.length === 1 ? 'was' : 'were'} unavailable.`,
       });
     }
 
     if (audit.status === 'detecting') {
       events.push({
         timestamp: audit.updated_at || started,
-        category: 'Findings',
+        category: 'Analysis',
         status: 'running',
-        message: 'Margin is evaluating synced activity for recovery opportunities.',
+        message: 'Margin is reviewing the available activity for potential recovery opportunities.',
       });
     }
 
     if (audit.status === 'completed') {
       events.push({
         timestamp: audit.completed_at || audit.updated_at || started,
-        category: 'Findings',
+        category: 'Result',
         status: 'completed',
         message: summary.findingsCount > 0
-          ? `Margin identified ${summary.findingsCount} actionable finding${summary.findingsCount === 1 ? '' : 's'}.`
-          : 'Margin completed the audit without identifying actionable recoveries in the available records.',
-      });
-
-      if (audit.commercial_route || audit.commercial_state) {
-        events.push({
-          timestamp: audit.commercial_decided_at || audit.completed_at || audit.updated_at || started,
-          category: 'Commercial',
-          status: 'completed',
-          message: `Commercial route resolved to ${audit.commercial_route || 'NO_SALE'} (${audit.commercial_state || 'unclassified'}).`,
-        });
-      }
-    }
-
-    if (audit.activation_status === 'activated') {
-      events.push({
-        timestamp: audit.updated_at || started,
-        category: 'Payment',
-        status: 'completed',
-        message: 'Recovery Workspace access is active for this audit workspace.',
+          ? `Margin identified ${summary.findingsCount} potential recovery opportunit${summary.findingsCount === 1 ? 'y' : 'ies'} for review.`
+          : 'Margin completed the audit without identifying potential recovery opportunities in the available records.',
       });
     }
 
@@ -1529,6 +1594,7 @@ class AuditRunService {
         schedule: null,
         entitlement: { entitled: false, state: 'none' },
         execution: this.getScheduleExecutionStatus(),
+        amazon: { connected: false },
       };
     }
 
@@ -1541,7 +1607,9 @@ class AuditRunService {
       .maybeSingle();
 
     if (error) throw new Error(`Failed to load audit schedule: ${error.message}`);
-    return { schedule: data || null, entitlement, execution: this.getScheduleExecutionStatus() };
+    const operating = await this.getScheduleOperatingState(data || null, tenantId, userId, entitlement);
+    const amazon = { connected: Boolean(await this.getAmazonConnection(userId, tenantId)) };
+    return { schedule: data || null, entitlement, execution: this.getScheduleExecutionStatus(), operating, amazon };
   }
 
   async saveSchedule(userId: string, tenantId: string, input: {
@@ -1595,7 +1663,9 @@ class AuditRunService {
       .single();
 
     if (error || !data) throw new Error(`Failed to save audit schedule: ${error?.message || 'Unknown error'}`);
-    return { schedule: data, entitlement, execution };
+    const operating = await this.getScheduleOperatingState(data, tenantId, userId, entitlement);
+    const amazon = { connected: Boolean(await this.getAmazonConnection(userId, tenantId)) };
+    return { schedule: data, entitlement, execution, operating, amazon };
   }
 
   async processDueSchedules(limit = 10) {
