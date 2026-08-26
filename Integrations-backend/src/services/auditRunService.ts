@@ -302,8 +302,18 @@ function addUtcDays(date: Date, days: number): Date {
 }
 
 class AuditRunService {
-  private async getWorkspace(userId: string, email?: string | null) {
-    return ensureAuthenticatedUserWorkspace({ userId, email });
+  private getScheduleExecutionStatus() {
+    const enabled = process.env.ENABLE_AUDIT_SCHEDULE_WORKER === 'true';
+    return {
+      available: enabled,
+      cadence_minutes: enabled ? 15 : null,
+      completion_notification: 'in_app' as const,
+      completion_email_enabled: false,
+    };
+  }
+
+  private async getWorkspace(userId: string, email?: string | null, preferredTenantSlug?: string | null) {
+    return ensureAuthenticatedUserWorkspace({ userId, email, preferredTenantSlug });
   }
 
   private async getAmazonConnection(userId: string, tenantId: string) {
@@ -325,14 +335,14 @@ class AuditRunService {
     return data;
   }
 
-  async startAudit(userId: string, email?: string | null, auditIntentId?: string | null): Promise<{
+  async startAudit(userId: string, email?: string | null, auditIntentId?: string | null, preferredTenantSlug?: string | null): Promise<{
     audit: any;
     tenant: any;
     amazonConnected: boolean;
     commercialEligibility?: string | null;
     nextEligibleAt?: string | null;
   }> {
-    const workspace = await this.getWorkspace(userId, email);
+    const workspace = await this.getWorkspace(userId, email, preferredTenantSlug);
     if (auditIntentId) {
       const intent = await auditIntentService.getOwnedActiveIntent(auditIntentId, workspace.userId);
       if (!intent) {
@@ -342,7 +352,7 @@ class AuditRunService {
         throw new Error('This audit intent is for manual report upload, not Amazon connection.');
       }
       if (intent.audit_run_id) {
-        const existingAudit = await this.getAudit(intent.audit_run_id, workspace.userId);
+        const existingAudit = await this.getAudit(intent.audit_run_id, workspace.userId, workspace.tenant.id);
         return {
           audit: existingAudit,
           tenant: workspace.tenant,
@@ -462,26 +472,37 @@ class AuditRunService {
     };
   }
 
-  async getAudit(auditId: string, userId: string) {
+  async getAudit(auditId: string, userId: string, tenantId?: string | null) {
     const safeUserId = convertUserIdToUuid(userId);
-    const { data, error } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('audit_runs')
       .select('*')
       .eq('id', auditId)
-      .eq('user_id', safeUserId)
-      .maybeSingle();
+      .eq('user_id', safeUserId);
+
+    if (tenantId) {
+      query = query.eq('tenant_id', tenantId);
+    }
+
+    const { data, error } = await query.maybeSingle();
 
     if (error) throw new Error(`Failed to load audit run: ${error.message}`);
     if (!data) throw new Error('Audit run not found');
     return data;
   }
 
-  async getLatestAudit(userId: string) {
+  async getLatestAudit(userId: string, tenantId?: string | null) {
     const safeUserId = convertUserIdToUuid(userId);
-    const { data, error } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('audit_runs')
       .select('*')
-      .eq('user_id', safeUserId)
+      .eq('user_id', safeUserId);
+
+    if (tenantId) {
+      query = query.eq('tenant_id', tenantId);
+    }
+
+    const { data, error } = await query
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -993,15 +1014,21 @@ class AuditRunService {
     };
   }
 
-  async getAuditHistory(userId: string, limit = 18) {
+  async getAuditHistory(userId: string, limit = 18, tenantId?: string | null) {
     const safeUserId = convertUserIdToUuid(userId);
     const cutoff = new Date();
     cutoff.setUTCMonth(cutoff.getUTCMonth() - 18);
-    const { data, error } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('audit_runs')
       .select('id, tenant_id, store_id, sync_id, status, source_type, started_at, completed_at, created_at, updated_at, summary, activation_status, commercial_state, commercial_route')
       .eq('user_id', safeUserId)
-      .gte('created_at', cutoff.toISOString())
+      .gte('created_at', cutoff.toISOString());
+
+    if (tenantId) {
+      query = query.eq('tenant_id', tenantId);
+    }
+
+    const { data, error } = await query
       .order('created_at', { ascending: false })
       .limit(Math.min(Math.max(limit, 1), 100));
 
@@ -1184,8 +1211,8 @@ class AuditRunService {
     return commercialAudit;
   }
 
-  async getResults(auditId: string, userId: string) {
-    const audit = await this.getAudit(auditId, userId);
+  async getResults(auditId: string, userId: string, tenantId?: string | null) {
+    const audit = await this.getAudit(auditId, userId, tenantId);
     const syncStatus = audit.sync_id
       ? await this.getSyncStatus(audit.sync_id, audit.user_id, audit.tenant_id, audit.store_id)
       : null;
@@ -1285,8 +1312,8 @@ class AuditRunService {
     };
   }
 
-  async getControlStatement(auditId: string, userId: string) {
-    const audit = await this.getAudit(auditId, userId);
+  async getControlStatement(auditId: string, userId: string, tenantId?: string | null) {
+    const audit = await this.getAudit(auditId, userId, tenantId);
     const controlStatement = await this.getControlStatementByAuditId(audit.id);
 
     if (!controlStatement) {
@@ -1356,9 +1383,9 @@ class AuditRunService {
     };
   }
 
-  async getExportSummary(auditId: string, userId: string) {
-    const audit = await this.getAudit(auditId, userId);
-    const result = await this.getResults(auditId, userId);
+  async getExportSummary(auditId: string, userId: string, tenantId?: string | null) {
+    const audit = await this.getAudit(auditId, userId, tenantId);
+    const result = await this.getResults(auditId, userId, tenantId);
     const summary = result.teaser;
     const findings = audit.sync_id
       ? await this.getFindingSummaries(audit.user_id, audit.tenant_id, audit.sync_id)
@@ -1398,8 +1425,8 @@ class AuditRunService {
     };
   }
 
-  async getActivity(auditId: string, userId: string) {
-    const audit = await this.getAudit(auditId, userId);
+  async getActivity(auditId: string, userId: string, tenantId?: string | null) {
+    const audit = await this.getAudit(auditId, userId, tenantId);
     const summary = audit.summary || EMPTY_SUMMARY;
     const events: Array<{ timestamp: string; category: string; status: string; message: string }> = [];
     const started = audit.started_at || audit.created_at || new Date().toISOString();
@@ -1490,12 +1517,14 @@ class AuditRunService {
     return events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   }
 
-  async getSchedule(userId: string) {
-    const latestAudit = await this.getLatestAudit(userId);
+  async getSchedule(userId: string, tenantId: string) {
     const safeUserId = convertUserIdToUuid(userId);
-    const tenantId = latestAudit?.tenant_id || null;
     if (!tenantId) {
-      return { schedule: null, entitlement: { entitled: false, state: 'none' } };
+      return {
+        schedule: null,
+        entitlement: { entitled: false, state: 'none' },
+        execution: this.getScheduleExecutionStatus(),
+      };
     }
 
     const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(tenantId);
@@ -1507,10 +1536,10 @@ class AuditRunService {
       .maybeSingle();
 
     if (error) throw new Error(`Failed to load audit schedule: ${error.message}`);
-    return { schedule: data || null, entitlement };
+    return { schedule: data || null, entitlement, execution: this.getScheduleExecutionStatus() };
   }
 
-  async saveSchedule(userId: string, input: {
+  async saveSchedule(userId: string, tenantId: string, input: {
     cadence: string;
     preferredDayOfWeek?: number | null;
     preferredDayOfMonth?: number | null;
@@ -1518,20 +1547,25 @@ class AuditRunService {
     timezone?: string | null;
     isPaused?: boolean;
   }) {
-    const latestAudit = await this.getLatestAudit(userId);
-    if (!latestAudit?.tenant_id) throw new Error('Audit workspace required before scheduling audits');
-    const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(latestAudit.tenant_id);
-    if (!entitlement.entitled) throw new Error('Recovery Workspace subscription required');
+    if (!tenantId) throw new Error('Audit workspace required before scheduling audits');
+    const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(tenantId);
 
     const cadence = String(input.cadence || 'off');
     if (!['off', 'weekly', 'biweekly', 'monthly'].includes(cadence)) throw new Error('Unsupported audit schedule frequency');
+    const isActiveSchedule = cadence !== 'off' && !Boolean(input.isPaused);
+    const execution = this.getScheduleExecutionStatus();
+    if (isActiveSchedule && !entitlement.entitled) throw new Error('Recovery Workspace subscription required');
+    if (isActiveSchedule && !execution.available) {
+      throw new Error('Automatic audit scheduling is not currently available. You can pause or turn off a saved schedule, but Margin will not save a new active schedule until execution is available.');
+    }
+
     const timezone = normalizeTimezone(input.timezone);
     const preferredTime = String(input.preferredTime || '09:00');
     if (!/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(preferredTime)) throw new Error('Invalid preferred time');
 
     const safeUserId = convertUserIdToUuid(userId);
     const payload = {
-      tenant_id: latestAudit.tenant_id,
+      tenant_id: tenantId,
       user_id: safeUserId,
       cadence,
       preferred_day_of_week: cadence === 'weekly' || cadence === 'biweekly' ? Number(input.preferredDayOfWeek ?? 1) : null,
@@ -1556,7 +1590,7 @@ class AuditRunService {
       .single();
 
     if (error || !data) throw new Error(`Failed to save audit schedule: ${error?.message || 'Unknown error'}`);
-    return { schedule: data, entitlement };
+    return { schedule: data, entitlement, execution };
   }
 
   async processDueSchedules(limit = 10) {

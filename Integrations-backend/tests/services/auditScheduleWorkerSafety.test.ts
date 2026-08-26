@@ -35,15 +35,19 @@ jest.mock('../../src/services/enhancedDetectionService', () => ({
   default: {},
 }));
 
-jest.mock('../../src/utils/logger', () => ({
-  __esModule: true,
-  default: {
+jest.mock('../../src/utils/logger', () => {
+  const logger = {
     info: jest.fn(),
     warn: jest.fn(),
     error: jest.fn(),
     debug: jest.fn(),
-  },
-}));
+  };
+  return {
+    __esModule: true,
+    default: logger,
+    getLogger: jest.fn(() => logger),
+  };
+});
 
 const dueSchedule = {
   id: 'schedule-1',

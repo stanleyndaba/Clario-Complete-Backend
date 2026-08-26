@@ -6,6 +6,13 @@ const router = Router();
 
 router.use(authenticateToken);
 
+function getResolvedTenantId(req: AuthenticatedRequest, res: any): string | null {
+  const tenantId = String((req as any).tenant?.tenantId || '').trim();
+  if (tenantId) return tenantId;
+  res.status(400).json({ success: false, message: 'Active workspace context is required' });
+  return null;
+}
+
 router.post('/start', async (req: AuthenticatedRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -13,10 +20,18 @@ router.post('/start', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditIntentId = typeof (req as any).body?.auditIntentId === 'string'
       ? (req as any).body.auditIntentId.trim()
       : null;
-    const result = await auditRunService.startAudit(userId, req.user?.email || null, auditIntentId);
+    const result = await auditRunService.startAudit(
+      userId,
+      req.user?.email || null,
+      auditIntentId,
+      String((req as any).tenant?.tenantSlug || '').trim() || null,
+    );
     return res.json({ success: true, ...result });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error?.message || 'Failed to start audit' });
@@ -30,7 +45,10 @@ router.get('/latest', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
-    const audit = await auditRunService.getLatestAudit(userId);
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
+    const audit = await auditRunService.getLatestAudit(userId, tenantId);
     return res.json({ success: true, audit });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error?.message || 'Failed to load latest audit' });
@@ -44,8 +62,11 @@ router.get('/history', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const limit = Number((req as any).query?.limit || 18);
-    const audits = await auditRunService.getAuditHistory(userId, limit);
+    const audits = await auditRunService.getAuditHistory(userId, limit, tenantId);
     return res.json({ success: true, audits });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error?.message || 'Failed to load audit history' });
@@ -59,7 +80,10 @@ router.get('/schedule', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
-    const result = await auditRunService.getSchedule(userId);
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
+    const result = await auditRunService.getSchedule(userId, tenantId);
     return res.json({ success: true, ...result });
   } catch (error: any) {
     return res.status(500).json({ success: false, message: error?.message || 'Failed to load audit schedule' });
@@ -73,8 +97,11 @@ router.put('/schedule', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const body = (req as any).body || {};
-    const result = await auditRunService.saveSchedule(userId, {
+    const result = await auditRunService.saveSchedule(userId, tenantId, {
       cadence: body.cadence,
       preferredDayOfWeek: body.preferred_day_of_week,
       preferredDayOfMonth: body.preferred_day_of_month,
@@ -97,8 +124,11 @@ router.post('/:id/connect-amazon', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditId = String((req as any).params?.id || '');
-    const audit = await auditRunService.getAudit(auditId, userId);
+    const audit = await auditRunService.getAudit(auditId, userId, tenantId);
     return res.json({
       success: true,
       audit,
@@ -121,11 +151,16 @@ router.post('/:id/run', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditId = String((req as any).params?.id || '');
-    const audit = await auditRunService.runAudit(auditId, userId);
-    return res.json({ success: true, audit });
+    const audit = await auditRunService.getAudit(auditId, userId, tenantId);
+    const updatedAudit = await auditRunService.runAudit(audit.id, userId);
+    return res.json({ success: true, audit: updatedAudit });
   } catch (error: any) {
-    return res.status(500).json({ success: false, message: error?.message || 'Failed to run audit' });
+    const status = error?.message === 'Audit run not found' ? 404 : 500;
+    return res.status(status).json({ success: false, message: error?.message || 'Failed to run audit' });
   }
 });
 
@@ -136,8 +171,11 @@ router.get('/:id/export-summary', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditId = String((req as any).params?.id || '');
-    const summary = await auditRunService.getExportSummary(auditId, userId);
+    const summary = await auditRunService.getExportSummary(auditId, userId, tenantId);
     return res.json({ success: true, ...summary });
   } catch (error: any) {
     const status = error?.message === 'Audit run not found' ? 404 : 500;
@@ -152,8 +190,11 @@ router.get('/:id/activity', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditId = String((req as any).params?.id || '');
-    const events = await auditRunService.getActivity(auditId, userId);
+    const events = await auditRunService.getActivity(auditId, userId, tenantId);
     return res.json({ success: true, events });
   } catch (error: any) {
     const status = error?.message === 'Audit run not found' ? 404 : 500;
@@ -168,8 +209,11 @@ router.get('/:id/results', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditId = String((req as any).params?.id || '');
-    const result = await auditRunService.getResults(auditId, userId);
+    const result = await auditRunService.getResults(auditId, userId, tenantId);
     return res.json({ success: true, ...result });
   } catch (error: any) {
     const status = error?.message === 'Audit run not found' ? 404 : 500;
@@ -184,8 +228,11 @@ router.get('/:id/commercial', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditId = String((req as any).params?.id || '');
-    const result = await auditRunService.getAudit(auditId, userId);
+    const result = await auditRunService.getAudit(auditId, userId, tenantId);
     return res.json({
       success: true,
       commercial: {
@@ -215,8 +262,11 @@ router.get('/:id/control-statement', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditId = String((req as any).params?.id || '');
-    const result = await auditRunService.getControlStatement(auditId, userId);
+    const result = await auditRunService.getControlStatement(auditId, userId, tenantId);
     return res.json({ success: true, controlStatement: result.controlStatement, audit: result.audit });
   } catch (error: any) {
     const status = error?.message === 'Audit run not found' ? 404 : 500;
@@ -231,8 +281,11 @@ router.get('/:id', async (req: AuthenticatedRequest, res) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const tenantId = getResolvedTenantId(req, res);
+    if (!tenantId) return;
+
     const auditId = String((req as any).params?.id || '');
-    const audit = await auditRunService.getAudit(auditId, userId);
+    const audit = await auditRunService.getAudit(auditId, userId, tenantId);
     return res.json({ success: true, audit });
   } catch (error: any) {
     const status = error?.message === 'Audit run not found' ? 404 : 500;
