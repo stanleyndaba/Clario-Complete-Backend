@@ -12,6 +12,7 @@ import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
 import * as Sentry from '@sentry/node';
 import config from './config/env';
+import { buildCorsOptions } from './config/corsConfig';
 import logger from './utils/logger';
 import { errorHandler, notFoundHandler } from './utils/errorHandler';
 import { requestMetricsMiddleware, captureException } from './utils/monitoring';
@@ -160,56 +161,7 @@ app.use(helmet({
   contentSecurityPolicy: false, // We handle CSP in securityHeadersMiddleware
   hsts: false, // We handle HSTS in securityHeadersMiddleware
 }));
-const configuredCorsOrigins = new Set(
-  [
-    process.env.FRONTEND_URL,
-    process.env.PUBLIC_FRONTEND_URL,
-    ...(process.env.ALLOWED_FRONTEND_ORIGINS || process.env.CORS_ALLOW_ORIGINS || '').split(','),
-    // Stable production domains remain explicit until deployment configuration
-    // supplies the canonical origin list.
-    'https://margin-finance.com',
-    'https://www.margin-finance.com'
-  ]
-    .map((value) => String(value || '').trim().replace(/\/$/, ''))
-    .filter(Boolean)
-);
-
-app.use(cors({
-  origin: (origin, callback) => {
-    // Non-browser service calls do not use browser credentials. Browser origins
-    // must be exact configured origins; wildcard deployment domains are unsafe.
-    if (!origin) return callback(null, true);
-    const normalizedOrigin = origin.replace(/\/$/, '');
-    const isLocalDevelopment = process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalizedOrigin);
-    if (isLocalDevelopment || configuredCorsOrigins.has(normalizedOrigin)) {
-      return callback(null, true);
-    }
-    logger.warn('CORS: rejecting unconfigured browser origin', { origin: normalizedOrigin, configuredOriginCount: configuredCorsOrigins.size });
-    return callback(new Error('CORS: origin is not allowed'));
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'X-Requested-With',
-    'X-User-Id',
-    'X-Forwarded-User-Id',
-    'X-Tenant-Id',
-    'X-Tenant-Slug',
-    'X-Demo-Mode',
-    'X-Store-Id',
-    'X-Frontend-URL',
-    'X-Request-Id',
-    'X-Correlation-Id',
-    'Origin',
-    'Referer',
-    'Accept',
-    'Cache-Control'
-  ],
-  exposedHeaders: ['X-User-Id', 'X-Request-Id', 'X-Tenant-Id', 'X-Tenant-Slug', 'X-Store-Id'],
-  maxAge: 86400 // 24 hours
-}));
+app.use(cors(buildCorsOptions()));
 
 // Import rate limiters
 import { generalRateLimiter, authRateLimiter } from './security/rateLimiter';
