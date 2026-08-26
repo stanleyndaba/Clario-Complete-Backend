@@ -48,13 +48,13 @@ export interface ReuseSuggestion {
 class DocumentGraphService {
 
     /**
-     * Get all claims linked to a specific document
+     * Get persisted evidence links for a specific document. These are the only
+     * relationships that may be presented as recorded document-to-recovery links.
      */
-    async getLinkedClaims(documentId: string, tenantId?: string): Promise<LinkedClaim[]> {
+    async getRecordedLinkedClaims(documentId: string, tenantId?: string): Promise<LinkedClaim[]> {
         try {
-            logger.info('📊 [DOC GRAPH] Getting linked claims for document', { documentId });
+            logger.info('📊 [DOC GRAPH] Getting recorded linked claims for document', { documentId, tenantId });
 
-            // Query dispute_evidence_links to get all linked claims
             const { data: links, error } = await supabaseAdmin
                 .from('dispute_evidence_links')
                 .select(`
@@ -75,24 +75,24 @@ class DocumentGraphService {
                 .eq('evidence_document_id', documentId);
 
             if (error) {
-                logger.warn('⚠️ [DOC GRAPH] Error querying links, trying fallback', { error: error.message });
-                return this.getLinkedClaimsFromDetections(documentId, tenantId);
-            }
-
-            if (!links || links.length === 0) {
-                // Try fallback via detection_results
-                return this.getLinkedClaimsFromDetections(documentId, tenantId);
+                logger.warn('⚠️ [DOC GRAPH] Error querying recorded evidence links', { error: error.message, documentId, tenantId });
+                return [];
             }
 
             const filteredLinks = tenantId
-                ? (links as any[]).filter((link: any) => !link.dispute_cases?.tenant_id || link.dispute_cases?.tenant_id === tenantId)
-                : (links as any[]);
+                ? (links || []).filter((link: any) => link.dispute_cases?.tenant_id === tenantId)
+                : (links || []);
 
-            const linkedClaims: LinkedClaim[] = filteredLinks.map((link: any) => {
+            return filteredLinks.map((link: any) => {
                 const dispute = link.dispute_cases;
-                const context = typeof link.matched_context === 'string'
-                    ? JSON.parse(link.matched_context)
-                    : link.matched_context || {};
+                let context = link.matched_context || {};
+                if (typeof context === 'string') {
+                    try {
+                        context = JSON.parse(context);
+                    } catch {
+                        context = {};
+                    }
+                }
 
                 return {
                     claimId: dispute?.id || link.dispute_case_id,
@@ -105,21 +105,26 @@ class DocumentGraphService {
                     confidence: link.relevance_score || 0
                 };
             });
-
-            logger.info('📊 [DOC GRAPH] Found linked claims', {
-                documentId,
-                claimCount: linkedClaims.length
-            });
-
-            return linkedClaims;
-
         } catch (error: any) {
-            logger.error('❌ [DOC GRAPH] Failed to get linked claims', {
-                documentId,
-                error: error.message
-            });
+            logger.error('❌ [DOC GRAPH] Failed to get recorded evidence links', { documentId, tenantId, error: error.message });
             return [];
         }
+    }
+
+    /**
+     * Return detection-based candidates separately. They are not persisted evidence links
+     * and must not be represented as recorded relationships or proof.
+     */
+    async getCandidateMatches(documentId: string, tenantId?: string): Promise<LinkedClaim[]> {
+        return this.getLinkedClaimsFromDetections(documentId, tenantId);
+    }
+
+    /**
+     * Backward-compatible helper for callers that ask for linked claims. It now returns
+     * persisted evidence links only; candidate matching is exposed explicitly above.
+     */
+    async getLinkedClaims(documentId: string, tenantId?: string): Promise<LinkedClaim[]> {
+        return this.getRecordedLinkedClaims(documentId, tenantId);
     }
 
     /**

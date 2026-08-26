@@ -10,6 +10,7 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'u
 const documentsRoute = read('src/routes/documentsRoutes.ts');
 const evidenceRoute = read('src/routes/evidenceRoutes.ts');
 const databaseClient = read('src/database/supabaseClient.ts');
+const documentGraphService = read('src/services/documentGraphService.ts');
 const assertions = [];
 const check = (condition, description) => {
   assert.ok(condition, description);
@@ -35,6 +36,12 @@ check(documentsRoute.includes("evidence_state: 'Superseded'"), 'superseded artif
 check(documentsRoute.includes('Destructive deletion is disabled to preserve evidence provenance'), 'primary destructive delete route is disabled');
 check(evidenceRoute.includes('Destructive deletion is disabled to preserve evidence provenance'), 'legacy v1 destructive delete route is disabled');
 check(evidenceRoute.includes('Bulk destructive deletion is disabled to preserve evidence provenance'), 'legacy bulk destructive delete route is disabled');
+check(documentGraphService.includes('getRecordedLinkedClaims'), 'document graph exposes persisted evidence links separately');
+check(documentGraphService.includes('getCandidateMatches'), 'document graph exposes detection candidates separately');
+check(documentGraphService.includes('must not be represented as recorded relationships or proof'), 'candidate graph results are explicitly bounded away from evidence-link truth');
+check(evidenceRoute.includes('linkedClaims: recordedLinks'), 'linked-claims API returns persisted links in its compatibility field');
+check(evidenceRoute.includes('candidateMatches'), 'linked-claims API exposes candidates in a separate response field');
+check(evidenceRoute.includes('not recorded evidence relationships'), 'linked-claims API does not overstate candidates as recorded links');
 
 console.log(`Evidence Locker lifecycle contract passed: ${assertions.length} assertions.`);
 for (const description of assertions) console.log(`✓ ${description}`);

@@ -3940,15 +3940,24 @@ router.get('/documents/:id/linked-claims', async (req: Request, res: Response) =
       });
     }
 
-    const linkedClaims = await documentGraphService.getLinkedClaims(documentId, tenantId);
+    const recordedLinks = await documentGraphService.getRecordedLinkedClaims(documentId, tenantId);
+    const candidateMatches = recordedLinks.length === 0
+      ? await documentGraphService.getCandidateMatches(documentId, tenantId)
+      : [];
 
     res.json({
       success: true,
       documentId,
-      linkedClaimCount: linkedClaims.length,
-      linkedClaims,
-      reuseMessage: linkedClaims.length > 0
-        ? `This document already supports ${linkedClaims.length} other claim${linkedClaims.length > 1 ? 's' : ''}`
+      // Retained for existing callers: linkedClaims contains persisted evidence links only.
+      linkedClaimCount: recordedLinks.length,
+      linkedClaims: recordedLinks,
+      reuseMessage: recordedLinks.length > 0
+        ? `This document has ${recordedLinks.length} recorded recovery relationship${recordedLinks.length > 1 ? 's' : ''}`
+        : null,
+      candidateMatchCount: candidateMatches.length,
+      candidateMatches,
+      candidateMatchMessage: candidateMatches.length > 0
+        ? `${candidateMatches.length} recovery candidate${candidateMatches.length > 1 ? 's were' : ' was'} identified from detection records; these are not recorded evidence relationships.`
         : null
     });
   } catch (error: any) {
