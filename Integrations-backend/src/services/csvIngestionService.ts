@@ -350,6 +350,29 @@ function detectCSVType(headers: string[], fileName: string = ''): CSVType {
     return bestMatch?.type || 'unknown';
 }
 
+function assertSyntheticTrainingFilesContainNoTransferInput(
+    files: { buffer: Buffer; originalname: string; mimetype: string }[],
+    explicitType?: CSVType
+): void {
+    if (explicitType === 'transfers') {
+        throw new Error('Transfer-like input is prohibited for synthetic training execution.');
+    }
+
+    for (const file of files) {
+        if (inferCsvTypeFromFileName(file.originalname) === 'transfers') {
+            throw new Error(`Transfer-like input is prohibited for synthetic training execution: ${file.originalname}`);
+        }
+
+        const records = parseManualAuditDelimitedRecords(file.buffer.toString('utf-8'));
+        if (records.length === 0) continue;
+
+        const detectedType = detectCSVType(Object.keys(records[0]), file.originalname);
+        if (detectedType === 'transfers') {
+            throw new Error(`Transfer-like input is prohibited for synthetic training execution: ${file.originalname}`);
+        }
+    }
+}
+
 // ============================================================================
 // Column Mapping — flexible mapping from various CSV column names → internal schema
 // ============================================================================
@@ -713,6 +736,9 @@ export class CSVIngestionService {
             tenantId: string;
         }
     ): Promise<BatchIngestionResult> {
+        // Synthetic certification is intentionally non-Transfer: reject the input before
+        // creating a CSV run, persisting rows, or invoking any detector.
+        assertSyntheticTrainingFilesContainNoTransferInput(files, options.explicitType);
         const syntheticExecution = createSyntheticAuditExecutionContext(options.tenantId);
         return this.ingestFiles(userId, files, { ...options, syntheticExecution });
     }

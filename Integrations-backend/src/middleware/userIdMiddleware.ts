@@ -56,6 +56,7 @@ const FAIL_CLOSED_AUTH_PREFIXES = [
   '/api/sync',
   '/api/v1/integrations/sync',
   '/api/csv-upload/ingest',
+  '/api/csv-upload/synthetic-training/ingest',
   '/api/csv-upload/latest-run'
 ];
 

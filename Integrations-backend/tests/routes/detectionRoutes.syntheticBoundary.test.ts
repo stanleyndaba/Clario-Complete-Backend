@@ -20,7 +20,7 @@ jest.mock('../../src/middleware/userIdMiddleware', () => ({
   userIdMiddleware: (req: any, _res: any, next: any) => {
     req.user = { id: 'training-user' };
     req.userId = 'training-user';
-    req.tenant = { tenantId: 'training-tenant' };
+    req.tenant = { tenantId: '22222222-2222-4222-8222-222222222222' };
     next();
   },
 }));
@@ -78,11 +78,11 @@ describe('direct detection synthetic execution boundary', () => {
 
     const response = await request(app)
       .get('/api/v1/integrations/detections/status/csv_123')
-      .set('x-tenant-id', 'training-tenant');
+      .set('x-tenant-id', '22222222-2222-4222-8222-222222222222');
 
     expect(response.status).toBe(200);
     expect(queueFilters).toEqual(expect.arrayContaining([
-      { field: 'tenant_id', value: 'training-tenant' },
+      { field: 'tenant_id', value: '22222222-2222-4222-8222-222222222222' },
       { field: 'seller_id', value: 'training-user' },
       { field: 'sync_id', value: 'csv_123' },
     ]));
@@ -90,13 +90,13 @@ describe('direct detection synthetic execution boundary', () => {
 
   it('fails closed when a synthetic status request has no authoritative queue provenance', async () => {
     const previousTrainingTenant = process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID;
-    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = 'training-tenant';
+    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = '22222222-2222-4222-8222-222222222222';
     mockQueueRows = [];
 
     try {
       const response = await request(app)
         .get('/api/v1/integrations/detections/status/synthetic_csv_123')
-        .set('x-tenant-id', 'training-tenant');
+        .set('x-tenant-id', '22222222-2222-4222-8222-222222222222');
 
       expect(response.status).toBe(409);
       expect(response.body.error.code).toBe('SYNTHETIC_PROVENANCE_REQUIRED');
@@ -108,7 +108,7 @@ describe('direct detection synthetic execution boundary', () => {
 
   it('labels a synthetic status only after queue provenance and tenant configuration both verify', async () => {
     const previousTrainingTenant = process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID;
-    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = 'training-tenant';
+    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = '22222222-2222-4222-8222-222222222222';
     mockQueueRows = [{
       id: 'queue-1',
       sync_id: 'synthetic_csv_123',
@@ -119,7 +119,7 @@ describe('direct detection synthetic execution boundary', () => {
     try {
       const response = await request(app)
         .get('/api/v1/integrations/detections/status/synthetic_csv_123')
-        .set('x-tenant-id', 'training-tenant');
+        .set('x-tenant-id', '22222222-2222-4222-8222-222222222222');
 
       expect(response.status).toBe(200);
       expect(response.body).toEqual(expect.objectContaining({
@@ -135,7 +135,7 @@ describe('direct detection synthetic execution boundary', () => {
 
   it('labels a direct detection-results response after durable synthetic verification', async () => {
     const previousTrainingTenant = process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID;
-    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = 'training-tenant';
+    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = '22222222-2222-4222-8222-222222222222';
     mockQueueRows = [{
       id: 'queue-2',
       sync_id: 'synthetic_csv_124',
@@ -146,7 +146,7 @@ describe('direct detection synthetic execution boundary', () => {
     try {
       const response = await request(app)
         .get('/api/v1/integrations/detections/results?syncId=synthetic_csv_124')
-        .set('x-tenant-id', 'training-tenant');
+        .set('x-tenant-id', '22222222-2222-4222-8222-222222222222');
 
       expect(response.status).toBe(200);
       expect(response.body.meta).toEqual(expect.objectContaining({

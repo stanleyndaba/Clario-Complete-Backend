@@ -46,7 +46,7 @@ const originalTenantId = process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID;
 
 describe('EnhancedDetectionService synthetic training boundary', () => {
   beforeEach(() => {
-    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = 'training-tenant';
+    process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = '22222222-2222-4222-8222-222222222222';
     jest.clearAllMocks();
     runLostInventoryDetection.mockResolvedValue([]);
     runRefundWithoutReturnDetection.mockResolvedValue([]);
@@ -63,10 +63,10 @@ describe('EnhancedDetectionService synthetic training boundary', () => {
 
   it('rejects a forged JSON-shaped synthetic context before any detector can run', async () => {
     const service = new EnhancedDetectionService();
-    const forged = Object.freeze({ provenance: 'SYNTHETIC_TRAINING_ONLY', tenantId: 'training-tenant' });
+    const forged = Object.freeze({ provenance: 'SYNTHETIC_TRAINING_ONLY', tenantId: '22222222-2222-4222-8222-222222222222' });
 
     await expect(service.triggerDetectionPipeline('training-user', 'synthetic_csv_001', 'csv_upload', {
-      tenantId: 'training-tenant',
+      tenantId: '22222222-2222-4222-8222-222222222222',
       source_type: 'csv_upload',
       syntheticExecution: forged,
     })).rejects.toThrow('was not issued by the server');
@@ -76,11 +76,11 @@ describe('EnhancedDetectionService synthetic training boundary', () => {
   });
 
   it('runs real non-Transfer detectors but suppresses Transfer, financial impact, and insight emission', async () => {
-    const context = createSyntheticAuditExecutionContext('training-tenant');
+    const context = createSyntheticAuditExecutionContext('22222222-2222-4222-8222-222222222222');
     const service = new EnhancedDetectionService();
 
     const result = await service.triggerDetectionPipeline('training-user', 'synthetic_csv_001', 'csv_upload', {
-      tenantId: 'training-tenant',
+      tenantId: '22222222-2222-4222-8222-222222222222',
       source_type: 'csv_upload',
       syntheticExecution: context,
     });

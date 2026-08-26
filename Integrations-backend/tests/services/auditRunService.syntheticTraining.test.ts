@@ -18,7 +18,7 @@ import { syntheticTrainingSummaryFields } from '../../src/services/syntheticAudi
 const originalTenantId = process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID;
 
 function configureTrainingTenant() {
-  process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = 'training-tenant';
+  process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID = '22222222-2222-4222-8222-222222222222';
 }
 
 afterEach(() => {
@@ -31,7 +31,7 @@ describe('auditRunService synthetic training boundary', () => {
   it('fails closed if any caller attempts to persist a commercial outcome for a trusted synthetic audit', async () => {
     configureTrainingTenant();
     await expect((auditRunService as any).persistCommercialOutcome({
-      audit: { id: 'synthetic-audit', sync_id: 'synthetic_csv_001', tenant_id: 'training-tenant' },
+      audit: { id: 'synthetic-audit', sync_id: 'synthetic_csv_001', tenant_id: '22222222-2222-4222-8222-222222222222' },
       summary: syntheticTrainingSummaryFields(),
       previousAudit: null,
       hasRecoveryWorkspace: false,
@@ -41,7 +41,7 @@ describe('auditRunService synthetic training boundary', () => {
   it('rejects a synthetic-looking sync that has no durable provenance before it can silently affect commercial handling', async () => {
     configureTrainingTenant();
     await expect((auditRunService as any).persistCommercialOutcome({
-      audit: { id: 'prefix-only-audit', sync_id: 'synthetic_csv_001', tenant_id: 'training-tenant' },
+      audit: { id: 'prefix-only-audit', sync_id: 'synthetic_csv_001', tenant_id: '22222222-2222-4222-8222-222222222222' },
       summary: { finalStatus: 'complete_no_findings' },
       previousAudit: null,
       hasRecoveryWorkspace: false,
@@ -52,7 +52,7 @@ describe('auditRunService synthetic training boundary', () => {
     configureTrainingTenant();
     await (auditRunService as any).emitCompletedAuditSignal({
       id: 'synthetic-audit',
-      tenant_id: 'training-tenant',
+      tenant_id: '22222222-2222-4222-8222-222222222222',
       status: 'completed',
       sync_id: 'synthetic_csv_001',
     }, {
@@ -67,7 +67,7 @@ describe('auditRunService synthetic training boundary', () => {
     configureTrainingTenant();
     const audit = {
       id: 'synthetic-audit',
-      tenant_id: 'training-tenant',
+      tenant_id: '22222222-2222-4222-8222-222222222222',
       user_id: 'training-user',
       sync_id: 'synthetic_csv_001',
       status: 'completed',
@@ -82,12 +82,12 @@ describe('auditRunService synthetic training boundary', () => {
     };
     jest.spyOn(auditRunService as any, 'getAudit').mockResolvedValue(audit);
 
-    await expect(auditRunService.getControlStatement('synthetic-audit', 'training-user', 'training-tenant'))
+    await expect(auditRunService.getControlStatement('synthetic-audit', 'training-user', '22222222-2222-4222-8222-222222222222'))
       .rejects.toThrow('Synthetic training audits cannot expose control statements');
-    await expect(auditRunService.getExportSummary('synthetic-audit', 'training-user', 'training-tenant'))
+    await expect(auditRunService.getExportSummary('synthetic-audit', 'training-user', '22222222-2222-4222-8222-222222222222'))
       .rejects.toThrow('Synthetic training audits cannot produce reporting exports');
 
-    await expect(auditRunService.getActivity('synthetic-audit', 'training-user', 'training-tenant'))
+    await expect(auditRunService.getActivity('synthetic-audit', 'training-user', '22222222-2222-4222-8222-222222222222'))
       .resolves.toEqual([expect.objectContaining({
         category: 'Synthetic training',
         message: expect.stringContaining('no Amazon seller data'),

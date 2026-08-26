@@ -256,6 +256,31 @@ describe('CSV detection fallback safety', () => {
     }
   });
 
+  it('rejects explicit and detected Transfer-like synthetic inputs before persistence or detection', async () => {
+    const transferCsv = [
+      'transfer_id,sku,quantity_sent,quantity_received,transfer_date',
+      'transfer-001,SKU-1,4,4,2026-03-18T00:00:00Z',
+    ].join('\n');
+
+    await expect(service.ingestSyntheticTrainingFiles(
+      userId,
+      [{ buffer: Buffer.from(orderCsv), originalname: 'orders.csv', mimetype: 'text/csv' }],
+      { explicitType: 'transfers', triggerDetection: true, tenantId }
+    )).rejects.toThrow('Transfer-like input is prohibited');
+
+    await expect(service.ingestSyntheticTrainingFiles(
+      userId,
+      [{ buffer: Buffer.from(transferCsv), originalname: 'control.csv', mimetype: 'text/csv' }],
+      { triggerDetection: true, tenantId }
+    )).rejects.toThrow('Transfer-like input is prohibited');
+
+    expect(tables.csv_upload_runs).toHaveLength(0);
+    expect(tables.detection_queue).toHaveLength(0);
+    expect(tables.detection_results).toHaveLength(0);
+    expect(mockTriggerDetectionPipeline).not.toHaveBeenCalled();
+    expect(mockLegacyEnqueueDetectionJob).not.toHaveBeenCalled();
+  });
+
   it('fails honestly when enhanced detection reports findings but persists zero detection_results rows', async () => {
     mockTriggerDetectionPipeline.mockResolvedValue({
       success: true,

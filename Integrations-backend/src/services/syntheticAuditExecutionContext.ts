@@ -6,6 +6,28 @@ export type SyntheticAuditExecutionContext = Readonly<{
   tenantId: string;
 }>;
 
+export type SyntheticTrainingAuthorizationCode =
+  | 'SYNTHETIC_TRAINING_TENANT_NOT_CONFIGURED'
+  | 'SYNTHETIC_TRAINING_TENANT_CONFIGURATION_INVALID'
+  | 'SYNTHETIC_TRAINING_TENANT_CONTEXT_MISSING'
+  | 'SYNTHETIC_TRAINING_TENANT_CONTEXT_INVALID'
+  | 'SYNTHETIC_TRAINING_TENANT_MISMATCH';
+
+/**
+ * A safe-to-return authorization error. The message never includes tenant IDs or
+ * other configuration values; the code lets the route and test harness identify
+ * the exact fail-closed branch without disclosing protected configuration.
+ */
+export class SyntheticTrainingAuthorizationError extends Error {
+  constructor(
+    public readonly code: SyntheticTrainingAuthorizationCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SyntheticTrainingAuthorizationError';
+  }
+}
+
 const issuedSyntheticExecutionContexts = new WeakSet<object>();
 
 type SyntheticProvenanceCarrier = {
@@ -14,9 +36,19 @@ type SyntheticProvenanceCarrier = {
   syntheticTraining?: unknown;
 };
 
+const TENANT_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizedTenantIdCandidate(value: unknown): string {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeTrustedTenantId(value: unknown): string | null {
+  const normalized = normalizedTenantIdCandidate(value);
+  return TENANT_UUID_REGEX.test(normalized) ? normalized : null;
+}
+
 export function getConfiguredSyntheticTrainingTenantId(): string | null {
-  const tenantId = String(process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID || '').trim();
-  return tenantId || null;
+  return normalizeTrustedTenantId(process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID);
 }
 
 /**
@@ -25,17 +57,46 @@ export function getConfiguredSyntheticTrainingTenantId(): string | null {
  * callers cannot enable training mode merely by setting a frontend flag.
  */
 export function createSyntheticAuditExecutionContext(tenantId: string): SyntheticAuditExecutionContext {
-  const configuredTenantId = getConfiguredSyntheticTrainingTenantId();
-  if (!configuredTenantId) {
-    throw new Error('Synthetic training execution is disabled: MARGIN_SYNTHETIC_TRAINING_TENANT_ID is not configured.');
+  const configuredRawTenantId = normalizedTenantIdCandidate(process.env.MARGIN_SYNTHETIC_TRAINING_TENANT_ID);
+  if (!configuredRawTenantId) {
+    throw new SyntheticTrainingAuthorizationError(
+      'SYNTHETIC_TRAINING_TENANT_NOT_CONFIGURED',
+      'Synthetic training execution is disabled because its dedicated training tenant is not configured.',
+    );
   }
-  if (configuredTenantId !== tenantId) {
-    throw new Error('Synthetic training execution is restricted to the configured training tenant.');
+
+  const configuredTenantId = normalizeTrustedTenantId(configuredRawTenantId);
+  if (!configuredTenantId) {
+    throw new SyntheticTrainingAuthorizationError(
+      'SYNTHETIC_TRAINING_TENANT_CONFIGURATION_INVALID',
+      'Synthetic training execution is disabled because its dedicated training tenant configuration is invalid.',
+    );
+  }
+
+  const authenticatedRawTenantId = normalizedTenantIdCandidate(tenantId);
+  if (!authenticatedRawTenantId) {
+    throw new SyntheticTrainingAuthorizationError(
+      'SYNTHETIC_TRAINING_TENANT_CONTEXT_MISSING',
+      'Synthetic training execution requires an authenticated training tenant context.',
+    );
+  }
+  const authenticatedTenantId = normalizeTrustedTenantId(authenticatedRawTenantId);
+  if (!authenticatedTenantId) {
+    throw new SyntheticTrainingAuthorizationError(
+      'SYNTHETIC_TRAINING_TENANT_CONTEXT_INVALID',
+      'Synthetic training execution requires a valid authenticated training tenant context.',
+    );
+  }
+  if (configuredTenantId !== authenticatedTenantId) {
+    throw new SyntheticTrainingAuthorizationError(
+      'SYNTHETIC_TRAINING_TENANT_MISMATCH',
+      'Synthetic training execution is restricted to the configured training tenant.',
+    );
   }
 
   const context = Object.freeze({
     provenance: SYNTHETIC_TRAINING_PROVENANCE,
-    tenantId,
+    tenantId: authenticatedTenantId,
   });
   issuedSyntheticExecutionContexts.add(context);
   return context;
@@ -68,8 +129,11 @@ export function validateSyntheticAuditExecutionContext(
   if (!issuedSyntheticExecutionContexts.has(value)) {
     throw new Error('Synthetic training execution context was not issued by the server.');
   }
-  if (value.tenantId !== tenantId) {
-    throw new Error('Synthetic training execution context tenant does not match the authenticated tenant.');
+  if (normalizeTrustedTenantId(value.tenantId) !== normalizeTrustedTenantId(tenantId)) {
+    throw new SyntheticTrainingAuthorizationError(
+      'SYNTHETIC_TRAINING_TENANT_MISMATCH',
+      'Synthetic training execution context tenant does not match the authenticated tenant.',
+    );
   }
   return createSyntheticAuditExecutionContext(tenantId);
 }

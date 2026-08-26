@@ -1,0 +1,98 @@
+{
+  "suite": "Margin Complete Synthetic Audit Certification",
+  "excludes": [
+    "legacy_transfer_positive_semantics_tests",
+    "provider_calls",
+    "redis_backed_execution",
+    "production_runtime_submission"
+  ],
+  "authorization_boundary": {
+    "files": [
+      "tests/services/syntheticAuditExecutionContext.test.ts",
+      "tests/routes/csvUploadRoutes.syntheticTraining.test.ts",
+      "tests/middleware/userIdMiddleware.syntheticTraining.test.ts"
+    ],
+    "assertions": [
+      "missing, malformed, normalized, and mismatched configured training tenants fail closed with safe codes",
+      "authenticated tenant identity is canonicalized only as a UUID and must equal the configured dedicated tenant",
+      "missing or incorrect provenance, missing identity, and synthetic authorization rejection cannot reach ordinary ingestion"
+    ]
+  },
+  "scenarios": {
+    "S0": {
+      "files": [
+        "tests/services/syntheticAuditCertificationFixtureContract.test.ts",
+        "tests/services/csvIngestionService.repair.test.ts"
+      ],
+      "assertions": [
+        "canonical fixture provenance and non-Transfer file set",
+        "real source mapper coverage with detection disabled",
+        "manifest expected parser contract"
+      ]
+    },
+    "S1": {
+      "files": ["tests/services/manualAuditTruthPhase1.test.ts", "tests/services/connectedAuditTruthService.test.ts"],
+      "name_patterns": ["COV-COMPLETE-CLEAN", "ROUTE-CLEAN", "CONNECTED-ZERO-DATA"],
+      "assertions": ["complete clean coverage is not seller recovery truth", "zero operational data is not no-recoveries truth"]
+    },
+    "S2": {
+      "files": ["tests/services/manualAuditTruthPhase1.test.ts"],
+      "name_patterns": ["COV-NO-RETURNS", "COV-NO-FINANCIAL", "COV-NO-INVENTORY", "COV-NO-SETTLEMENTS", "COV-MALFORMED-FEE", "ROUTE-EVIDENCE-LIMITED"],
+      "assertions": ["missing or malformed source remains partial", "unknown source coverage never becomes clean zero"]
+    },
+    "S3": {
+      "files": ["tests/services/syntheticAuditCertificationFixtureContract.test.ts", "tests/services/csvIngestionService.repair.test.ts", "tests/services/manualAuditTruthPhase1.test.ts"],
+      "name_patterns": ["FEE-BLANK", "TIME-INVALID-FINANCIAL"],
+      "assertions": ["malformed records reject before persistence or detection", "ambiguous values do not become findings"]
+    },
+    "S4": {
+      "files": ["tests/services/syntheticAuditCertificationFixtureContract.test.ts", "tests/services/manualAuditTruthPhase1.test.ts", "tests/services/csvDetectionFallbackSafety.test.ts"],
+      "name_patterns": ["IDEMPOTENT-RESUME", "IDEMPOTENT-CHANGED"],
+      "assertions": ["duplicate source submission does not duplicate canonical rows or economic value"]
+    },
+    "S5": {
+      "files": ["tests/services/manualAuditTruthPhase1.test.ts", "tests/services/inboundInspectorP1Regression.test.ts"],
+      "name_patterns": ["IN-MISSING", "IN-NULL-RECEIPT", "FEE-BLANK"],
+      "assertions": ["missing quantity or receipt remains unknown", "observed literal zero is not conflated with missing"]
+    },
+    "S6": {
+      "files": ["tests/services/manualAuditTruthPhase1.test.ts"],
+      "name_patterns": ["RF-FULL-REIMB", "RF-FNSKU-MATCH", "BG-FULL-REIMB"],
+      "assertions": ["strictly matched reimbursement suppresses an unmatched-refund residual"]
+    },
+    "S7": {
+      "files": ["tests/services/manualAuditTruthPhase1.test.ts"],
+      "name_patterns": ["RF-PARTIAL-REIMB", "RF-FNSKU-CONFLICT", "IN-PARTIAL-REIMB", "BG-PARTIAL-REIMB"],
+      "assertions": ["real residual contract is preserved without fabricating unsupported recovery value"]
+    },
+    "S8": {
+      "files": ["tests/services/manualAuditTruthPhase1.test.ts", "tests/services/sentinelReviewValueBoundary.test.ts", "tests/services/feeAlgorithmsPersistence.test.ts"],
+      "name_patterns": ["FEE-DUPLICATE", "FEE-LEGIT-SAME-AMOUNT", "FEE-SIGN-REVIEW", "SE-CLAWBACK"],
+      "assertions": ["fee and reversal events retain their real non-additive review boundary"]
+    },
+    "S9": {
+      "files": ["tests/services/manualAuditTruthPhase1.test.ts", "tests/services/sentinelReviewValueBoundary.test.ts"],
+      "name_patterns": ["OVL-REFUND-SENTINEL", "ADVERSARIAL-RF-ONE-REIMB-TWO-REFUNDS", "FT-SKU-COLLISION"],
+      "assertions": ["economic ownership prevents duplicated value and cross-event suppression"]
+    },
+    "S10": {
+      "files": ["tests/services/manualAuditTruthPhase1.test.ts", "tests/services/inboundInspectorP1Regression.test.ts", "tests/services/fulfillmentInboundV0Service.test.ts"],
+      "name_patterns": ["IN-SHORTAGE", "IN-MISSING", "IN-NULL-RECEIPT", "IN-IMMATURE"],
+      "assertions": ["real inbound or inventory-ledger discrepancy contract remains coverage and maturity bounded"]
+    },
+    "S11": {
+      "files": ["tests/services/enhancedDetectionService.syntheticTraining.test.ts", "tests/services/syntheticAuditCertificationFixtureContract.test.ts", "tests/services/csvDetectionFallbackSafety.test.ts"],
+      "name_patterns": ["rejects explicit and detected Transfer-like synthetic inputs before persistence or detection"],
+      "assertions": ["synthetic execution never invokes Transfer", "no Transfer fixture is permitted", "explicit or header-detected Transfer-like input is rejected before persistence, queueing, or detection"]
+    }
+  },
+  "shared_safety_files": [
+    "tests/services/syntheticAuditExecutionContext.test.ts",
+    "tests/services/auditRunService.syntheticTraining.test.ts",
+    "tests/routes/detectionRoutes.syntheticBoundary.test.ts",
+    "tests/services/csvDetectionFallbackSafety.test.ts",
+    "tests/routes/csvUploadRoutes.syntheticTraining.test.ts",
+    "tests/config/corsConfig.syntheticTraining.test.ts",
+    "tests/middleware/userIdMiddleware.syntheticTraining.test.ts"
+  ]
+}

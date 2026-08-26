@@ -21,7 +21,10 @@ import capacityGovernanceService from '../services/capacityGovernanceService';
 import operationalControlService from '../services/operationalControlService';
 import runtimeCapacityService from '../services/runtimeCapacityService';
 import auditRunService from '../services/auditRunService';
-import { SYNTHETIC_TRAINING_PROVENANCE } from '../services/syntheticAuditExecutionContext';
+import {
+    SYNTHETIC_TRAINING_PROVENANCE,
+    SyntheticTrainingAuthorizationError,
+} from '../services/syntheticAuditExecutionContext';
 
 const router = Router();
 const CSV_UPLOAD_BREAKER_BYPASS = ['filing-auto-dispatch'] as const;
@@ -203,6 +206,7 @@ router.post('/synthetic-training/ingest', requireActiveTenant, upload.array('fil
         if (provenance !== SYNTHETIC_TRAINING_PROVENANCE) {
             return res.status(403).json({
                 success: false,
+                code: 'SYNTHETIC_TRAINING_PROVENANCE_REQUIRED',
                 error: 'Synthetic training execution requires the SYNTHETIC_TRAINING_ONLY provenance header.',
             });
         }
@@ -232,9 +236,16 @@ router.post('/synthetic-training/ingest', requireActiveTenant, upload.array('fil
             },
         });
     } catch (error: any) {
-        logger.warn('🧪 [CSV UPLOAD] Synthetic training ingestion rejected or failed', { error: error?.message || String(error) });
+        const code = error instanceof SyntheticTrainingAuthorizationError
+            ? error.code
+            : 'SYNTHETIC_TRAINING_INGESTION_REJECTED';
+        logger.warn('🧪 [CSV UPLOAD] Synthetic training ingestion rejected or failed', {
+            code,
+            error: error?.message || String(error),
+        });
         return res.status(403).json({
             success: false,
+            code,
             error: error?.message || 'Synthetic training ingestion was rejected.',
         });
     }
