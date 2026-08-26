@@ -2035,6 +2035,30 @@ describe('Manual Audit truth test phase 1', () => {
     expect(byCase.get('FT-CASE-B')).toMatchObject({ verified_paid_amount: 100, outstanding_amount: 0, payout_status: 'paid' });
   });
 
+  it('CONNECTED-ZERO-DATA: a completed SP-API audit with zero reviewed records is never phrased as no recoveries', async () => {
+    tables.detection_results = [];
+
+    const summary = await (auditRunService as any).buildSummary(
+      SELLER_A,
+      TENANT_A,
+      'connected-zero-data-sync',
+      { status: 'completed', metadata: { ordersProcessed: 0, inventoryCount: 0, sourceWarnings: [] } },
+      'sp_api',
+    );
+
+    expect(summary).toMatchObject({
+      findingsCount: 0,
+      recordsReviewed: 0,
+      finalStatus: 'partial_no_findings',
+      dataTruthState: 'connected_zero_operational_data',
+      retryable: true,
+    });
+    expect(summary.message).toContain('Amazon connected successfully');
+    expect(summary.message).toContain('no usable Amazon records');
+    expect(summary.message).toMatch(/no recovery conclusion can be made/i);
+    expect(summary.message).not.toMatch(/no recovery opportunities/i);
+  });
+
   it('ROUTE-EVIDENCE-LIMITED: no usable records routes to evidence remediation, never a clean audit', () => {
     const decision = classifyCommercialDecision({
       currentAudit: {

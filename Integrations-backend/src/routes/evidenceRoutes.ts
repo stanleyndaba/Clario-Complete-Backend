@@ -1895,7 +1895,12 @@ router.post('/upload', uploadMulter.any(), async (req: Request, res: Response) =
       // Check if response is successful and valid JSON
       if (response.status >= 400) {
         // Check if response is HTML (Render error page)
-        const contentType = response.headers['content-type'] || '';
+        const contentTypeHeader = response.headers['content-type'];
+        const contentType = typeof contentTypeHeader === 'string'
+          ? contentTypeHeader
+          : Array.isArray(contentTypeHeader)
+            ? contentTypeHeader.join(',')
+            : '';
         const isHtml = typeof response.data === 'string' && (
           response.data.trim().startsWith('<!DOCTYPE') ||
           response.data.trim().startsWith('<html') ||

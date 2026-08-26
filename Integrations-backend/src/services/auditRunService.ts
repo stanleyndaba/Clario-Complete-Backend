@@ -16,6 +16,10 @@ import {
   type CommercialDecision,
 } from './auditCommercialDecisionService';
 import { systemSignalService } from '../notifications/services/system_signal_service';
+import {
+  classifyConnectedAuditTruth,
+  type ConnectedAuditTruthState,
+} from './connectedAuditTruthService';
 
 type AuditRunStatus =
   | 'created'
@@ -51,6 +55,7 @@ type AuditSummary = {
   controlStatementId?: string | null;
   firstUsefulResult?: Record<string, unknown> | null;
   firstUsefulResultAt?: string | null;
+  dataTruthState?: ConnectedAuditTruthState;
 };
 
 const EMPTY_SUMMARY: AuditSummary = {
@@ -730,7 +735,7 @@ class AuditRunService {
 
     const syncStatus = this.buildCsvSyncStatus(uploadRun);
     const summary = auditStatus === 'completed'
-      ? await this.buildSummary(safeUserId, input.tenantId, syncId, syncStatus)
+      ? await this.buildSummary(safeUserId, input.tenantId, syncId, syncStatus, 'csv_upload')
       : {
           ...SYNC_IN_PROGRESS_SUMMARY,
           message: 'Manual report detection is still running. Margin will finish the recovery audit when processing completes.',
@@ -855,7 +860,7 @@ class AuditRunService {
     }
 
     const syncStatus = this.buildCsvSyncStatus(uploadRun);
-    const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus);
+    const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus, audit.source_type);
     const completedAt = audit.completed_at || detection.completedAt || uploadRun.completed_at || new Date().toISOString();
     const completedAudit = await this.updateAudit(audit.id, {
       status: 'completed',
@@ -1187,7 +1192,7 @@ class AuditRunService {
       });
     }
 
-    const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus);
+    const summary = await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus, audit.source_type);
     const completedAt = new Date().toISOString();
     const firstUsefulResult = deriveFirstUsefulResult(summary);
     const completedAudit = await this.updateAudit(audit.id, {
@@ -1217,7 +1222,7 @@ class AuditRunService {
       ? await this.getSyncStatus(audit.sync_id, audit.user_id, audit.tenant_id, audit.store_id)
       : null;
     const summary = audit.status === 'completed' && audit.sync_id
-      ? await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus)
+      ? await this.buildSummary(audit.user_id, audit.tenant_id, audit.sync_id, syncStatus, audit.source_type)
       : (audit.summary || EMPTY_SUMMARY);
     const teaserSummary = {
       ...summary,
@@ -1787,7 +1792,13 @@ class AuditRunService {
     return data;
   }
 
-  private async buildSummary(userId: string, tenantId: string, syncId: string, syncStatus?: any): Promise<AuditSummary> {
+  private async buildSummary(
+    userId: string,
+    tenantId: string,
+    syncId: string,
+    syncStatus?: any,
+    auditSourceType?: unknown,
+  ): Promise<AuditSummary> {
     const { data, error } = await supabaseAdmin
       .from('detection_results')
       .select('estimated_value, evidence, anomaly_type, coverage_family, detector_key, claim_readiness')
@@ -1834,13 +1845,13 @@ class AuditRunService {
     const finalStatus: AuditSummary['finalStatus'] = hasFindings
       ? (isPartial ? 'partial_with_findings' : 'complete_with_findings')
       : (isPartial ? 'partial_no_findings' : 'complete_no_findings');
-    const message = hasFindings
-      ? (isPartial
-          ? 'Margin found recovery candidates from the Amazon data available. Some datasets were unavailable, so the audit is limited.'
-          : 'Margin found recovery candidates. Activate Margin to open the recovery workflow.')
-      : (isPartial
-          ? 'Margin completed the audit with limited Amazon data. No recovery candidates were found in the records available for review.'
-          : 'Margin reviewed the available Amazon activity and did not identify recovery opportunities in that audit window.');
+    const truth = classifyConnectedAuditTruth({
+      sourceType: auditSourceType || metadata.sourceType || metadata.source || syncStatus?.source_type,
+      syncStatus: syncStatus?.status,
+      recordsReviewed,
+      findingsCount: rows.length,
+      sourcesUnavailable,
+    });
 
     return {
       scopeValue,
@@ -1848,12 +1859,13 @@ class AuditRunService {
       categories,
       evidenceReadyCount,
       locked: true,
-      message,
+      message: truth.message,
       finalStatus,
+      dataTruthState: truth.state,
       recordsReviewed,
       sourcesReviewed,
       sourcesUnavailable,
-      retryable: isPartial
+      retryable: truth.retryable
     };
   }
 
