@@ -121,10 +121,12 @@ function isProductDocument(doc: any) {
 function getAuthoritativeParserStatus(doc: any) {
     const parsedMetadata = doc?.parsed_metadata || {};
     const metadata = doc?.metadata || {};
+    const parsedContentKeys = Object.keys(parsedMetadata || {})
+        .filter(key => key !== '_lifecycle' && key !== '_audit_history');
 
     if (parsedMetadata?._parse_failed || parsedMetadata?.parsing_strategy === 'FAILED_DURABLE') return 'failed';
     if (parsedMetadata?.parsing_strategy === 'PARTIAL') return 'partial';
-    if (parsedMetadata && Object.keys(parsedMetadata).length > 0) {
+    if (parsedContentKeys.length > 0) {
         return parsedMetadata.parser_status || 'completed';
     }
 
@@ -154,30 +156,39 @@ function getSourceDisplay(doc: any) {
 }
 
 function getDocumentLifecycle(doc: any) {
-    const rawMetadata = doc?.metadata;
-    let metadata: Record<string, any> = {};
-
-    if (rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)) {
-        metadata = rawMetadata;
-    } else if (typeof rawMetadata === 'string') {
-        try {
-            metadata = JSON.parse(rawMetadata);
-        } catch {
-            metadata = {};
+    const parseObject = (value: any): Record<string, any> => {
+        if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+        if (typeof value === 'string') {
+            try {
+                const parsed = JSON.parse(value);
+                return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+            } catch {
+                return {};
+            }
         }
-    }
+        return {};
+    };
 
-    const lifecycleState = metadata.lifecycle_state === 'archived' || metadata.lifecycle_state === 'superseded'
-        ? metadata.lifecycle_state
+    const metadata = parseObject(doc?.metadata);
+    const parsedMetadata = parseObject(doc?.parsed_metadata);
+    // Legacy production databases may not yet expose the canonical metadata column.
+    // _lifecycle is a namespaced compatibility store, never parser-derived evidence.
+    const lifecycleMetadata = {
+        ...parseObject(parsedMetadata._lifecycle),
+        ...metadata
+    };
+    const lifecycleState = lifecycleMetadata.lifecycle_state === 'archived' || lifecycleMetadata.lifecycle_state === 'superseded'
+        ? lifecycleMetadata.lifecycle_state
         : 'active';
 
     return {
         metadata,
+        parsedMetadata,
         lifecycleState,
-        archivedAt: metadata.archived_at || null,
-        archivedReason: metadata.archived_reason || null,
-        supersededByDocumentId: metadata.superseded_by_document_id || null,
-        supersedesDocumentId: metadata.supersedes_document_id || null
+        archivedAt: lifecycleMetadata.archived_at || null,
+        archivedReason: lifecycleMetadata.archived_reason || null,
+        supersededByDocumentId: lifecycleMetadata.superseded_by_document_id || null,
+        supersedesDocumentId: lifecycleMetadata.supersedes_document_id || null
     };
 }
 
@@ -1215,7 +1226,7 @@ router.post('/:id/archive', async (req: Request, res: Response) => {
 
         const { data: doc, error: docError } = await supabaseAdmin
             .from('evidence_documents')
-            .select('id, filename, metadata')
+            .select('id, filename, metadata, parsed_metadata')
             .eq('id', docId)
             .eq('tenant_id', tenantId)
             .single();
@@ -1234,19 +1245,29 @@ router.post('/:id/archive', async (req: Request, res: Response) => {
 
         const lifecycle = getDocumentLifecycle(doc);
         const archivedAt = new Date().toISOString();
-        const nextMetadata = {
-            ...lifecycle.metadata,
+        const nextLifecycleMetadata = {
             lifecycle_state: 'archived',
             archived_at: archivedAt,
             archived_reason: reason,
             archived_by: userId,
             archived_linked_case_count: linkedCaseCount || 0
         };
+        const nextMetadata = {
+            ...lifecycle.metadata,
+            ...nextLifecycleMetadata
+        };
+        const nextParsedMetadata = {
+            ...lifecycle.parsedMetadata,
+            _lifecycle: {
+                ...lifecycle.parsedMetadata._lifecycle,
+                ...nextLifecycleMetadata
+            }
+        };
 
         const { data: updatedDocument, error: updateError } = await supabaseAdmin
             .from('evidence_documents')
-            .update({ metadata: nextMetadata, updated_at: archivedAt })
-            .select('id, metadata')
+            .update({ metadata: nextMetadata, parsed_metadata: nextParsedMetadata, updated_at: archivedAt })
+            .select('id, metadata, parsed_metadata')
             .eq('id', docId)
             .eq('tenant_id', tenantId)
             .maybeSingle();
@@ -1303,8 +1324,8 @@ router.post('/:id/supersede', async (req: Request, res: Response) => {
         }
 
         const [{ data: original, error: originalError }, { data: replacement, error: replacementError }] = await Promise.all([
-            supabaseAdmin.from('evidence_documents').select('id, filename, metadata').eq('id', docId).eq('tenant_id', tenantId).single(),
-            supabaseAdmin.from('evidence_documents').select('id, filename, metadata').eq('id', replacementDocumentId).eq('tenant_id', tenantId).single()
+            supabaseAdmin.from('evidence_documents').select('id, filename, metadata, parsed_metadata').eq('id', docId).eq('tenant_id', tenantId).single(),
+            supabaseAdmin.from('evidence_documents').select('id, filename, metadata, parsed_metadata').eq('id', replacementDocumentId).eq('tenant_id', tenantId).single()
         ]);
 
         if (originalError || !original || replacementError || !replacement) {
@@ -1326,9 +1347,20 @@ router.post('/:id/supersede', async (req: Request, res: Response) => {
                     superseded_by_filename: replacement.filename,
                     superseded_by: userId
                 },
+                parsed_metadata: {
+                    ...originalLifecycle.parsedMetadata,
+                    _lifecycle: {
+                        ...originalLifecycle.parsedMetadata._lifecycle,
+                        lifecycle_state: 'superseded',
+                        superseded_at: supersededAt,
+                        superseded_by_document_id: replacementDocumentId,
+                        superseded_by_filename: replacement.filename,
+                        superseded_by: userId
+                    }
+                },
                 updated_at: supersededAt
             })
-            .select('id, metadata')
+            .select('id, metadata, parsed_metadata')
             .eq('id', docId)
             .eq('tenant_id', tenantId)
             .maybeSingle();
@@ -1347,9 +1379,18 @@ router.post('/:id/supersede', async (req: Request, res: Response) => {
                     supersedes_filename: original.filename,
                     supersession_recorded_at: supersededAt
                 },
+                parsed_metadata: {
+                    ...replacementLifecycle.parsedMetadata,
+                    _lifecycle: {
+                        ...replacementLifecycle.parsedMetadata._lifecycle,
+                        supersedes_document_id: docId,
+                        supersedes_filename: original.filename,
+                        supersession_recorded_at: supersededAt
+                    }
+                },
                 updated_at: supersededAt
             })
-            .select('id, metadata')
+            .select('id, metadata, parsed_metadata')
             .eq('id', replacementDocumentId)
             .eq('tenant_id', tenantId)
             .maybeSingle();

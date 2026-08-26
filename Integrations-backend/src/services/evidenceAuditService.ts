@@ -504,7 +504,7 @@ class EvidenceAuditService {
         try {
             const { data: doc, error: docError } = await supabaseAdmin
                 .from('evidence_documents')
-                .select('metadata')
+                .select('metadata, parsed_metadata')
                 .eq('id', documentId)
                 .eq('tenant_id', tenantId)
                 .single();
@@ -514,8 +514,13 @@ class EvidenceAuditService {
             const metadata = typeof doc.metadata === 'string'
                 ? JSON.parse(doc.metadata)
                 : doc.metadata || {};
-            const editHistory = Array.isArray(metadata._audit_history) ? metadata._audit_history : [];
-            editHistory.push({
+            const parsedMetadata = typeof doc.parsed_metadata === 'string'
+                ? JSON.parse(doc.parsed_metadata)
+                : doc.parsed_metadata || {};
+            const priorHistory = Array.isArray(metadata._audit_history)
+                ? metadata._audit_history
+                : (Array.isArray(parsedMetadata._audit_history) ? parsedMetadata._audit_history : []);
+            const auditEvent = {
                 action: 'manual_edit',
                 field: fieldName,
                 old_value: oldValue,
@@ -525,18 +530,29 @@ class EvidenceAuditService {
                 actor_type: 'user',
                 tenant_id: tenantId,
                 edited_at: new Date().toISOString()
-            });
+            };
+            const editHistory = [...priorHistory, auditEvent];
 
-            const { error: updateError } = await supabaseAdmin
+            const { data: updatedDocument, error: updateError } = await supabaseAdmin
                 .from('evidence_documents')
                 .update({
                     metadata: { ...metadata, _audit_history: editHistory },
+                    parsed_metadata: { ...parsedMetadata, _audit_history: editHistory },
                     updated_at: new Date().toISOString()
                 })
+                .select('id, metadata, parsed_metadata')
                 .eq('id', documentId)
-                .eq('tenant_id', tenantId);
+                .eq('tenant_id', tenantId)
+                .maybeSingle();
 
-            return !updateError;
+            if (updateError || !updatedDocument) return false;
+            const persistedParsedMetadata = typeof updatedDocument.parsed_metadata === 'string'
+                ? JSON.parse(updatedDocument.parsed_metadata)
+                : updatedDocument.parsed_metadata || {};
+            const persistedHistory = Array.isArray(persistedParsedMetadata._audit_history)
+                ? persistedParsedMetadata._audit_history
+                : [];
+            return persistedHistory.some((event: any) => event?.edited_at === auditEvent.edited_at);
         } catch (error: any) {
             logger.error('❌ [AUDIT] Provenance fallback logging failed', { documentId, tenantId, error: error.message });
             return false;

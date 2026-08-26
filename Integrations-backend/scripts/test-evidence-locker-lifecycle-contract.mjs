@@ -32,7 +32,9 @@ check(documentsRoute.includes("router.post('/:id/archive'"), 'archive lifecycle 
 check(documentsRoute.includes("router.post('/:id/supersede'"), 'supersession lifecycle route is present');
 check(documentsRoute.includes("lifecycle_state: 'archived'"), 'archive records a durable lifecycle state');
 check(documentsRoute.includes("Archive lifecycle metadata was not durably persisted"), 'archive rejects a false-success response when lifecycle metadata cannot be read back');
-check(documentsRoute.includes(".select('id, metadata')"), 'lifecycle updates request metadata readback from the database');
+check(documentsRoute.includes(".select('id, metadata, parsed_metadata')"), 'lifecycle updates request metadata readback from the database');
+check(documentsRoute.includes('_lifecycle'), 'legacy lifecycle fallback is explicitly namespaced away from parser-derived data');
+check(documentsRoute.includes("key !== '_lifecycle'"), 'lifecycle fallback alone does not cause an artifact to appear parsed');
 check(documentsRoute.includes("Archive lifecycle audit event could not be preserved"), 'archive refuses success when its lifecycle audit event is not preserved');
 check(documentsRoute.includes("superseded_by_document_id"), 'supersession records replacement lineage');
 check(documentsRoute.includes("supersedes_document_id"), 'replacement records its original artifact lineage');
@@ -42,7 +44,8 @@ check(evidenceAuditService.includes('tenant_id: tenantId'), 'lifecycle audit wri
 check(evidenceAuditService.includes('actor_user_id: convertUserIdToUuid(userId)'), 'lifecycle audit records a valid actor identity');
 check(evidenceAuditService.includes('payload_before'), 'lifecycle audit preserves the prior lifecycle value');
 check(evidenceAuditService.includes('payload_after'), 'lifecycle audit preserves the next lifecycle value');
-check(evidenceAuditService.includes('_audit_history'), 'audit fallback remains in document provenance metadata rather than parsed content');
+check(evidenceAuditService.includes('_audit_history'), 'audit fallback remains in document provenance metadata and a namespaced legacy-compatible readback field');
+check(evidenceAuditService.includes(".select('id, metadata, parsed_metadata')"), 'audit fallback verifies the persisted provenance history after update');
 check(evidenceAuditService.includes(".eq('tenant_id', tenantId)"), 'audit fallback is scoped to the active tenant');
 check(lifecycleMigration.includes('ADD COLUMN IF NOT EXISTS metadata JSONB'), 'evidence lifecycle metadata schema migration is idempotent');
 check(lifecycleMigration.includes('ALTER COLUMN metadata SET NOT NULL'), 'evidence lifecycle metadata is required after migration');
