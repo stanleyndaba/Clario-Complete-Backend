@@ -3501,9 +3501,19 @@ router.post('/v1/evidence/parse/:documentId', async (req: Request, res: Response
  */
 router.delete('/v1/evidence/documents/:documentId', async (req: Request, res: Response) => {
   try {
+    const tenantId = (req as any).tenant?.tenantId;
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    return res.status(409).json({
+      success: false,
+      error: 'Destructive deletion is disabled to preserve evidence provenance. Archive this document or record a replacement instead.',
+      lifecycle_action: 'archive_or_supersede'
+    });
+
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
     const documentId = req.params.documentId;
-    const tenantId = (req as any).tenant?.tenantId;
 
     if (!tenantId) {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
@@ -3549,6 +3559,17 @@ router.delete('/v1/evidence/documents/:documentId', async (req: Request, res: Re
  */
 router.delete('/v1/evidence/documents', async (req: Request, res: Response) => {
   try {
+    const requestTenantId = (req as any).tenant?.tenantId;
+    if (!requestTenantId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    return res.status(409).json({
+      success: false,
+      error: 'Bulk destructive deletion is disabled to preserve evidence provenance. Archive individual artifacts instead.',
+      lifecycle_action: 'archive_individual_documents'
+    });
+
     const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
     const tenantId = (req as any).tenant?.tenantId;
 

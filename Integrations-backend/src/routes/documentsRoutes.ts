@@ -148,6 +148,34 @@ function getSourceDisplay(doc: any) {
     return doc?.provider || doc?.source || (doc?.source_id ? 'connected_source' : 'upload') || 'unknown';
 }
 
+function getDocumentLifecycle(doc: any) {
+    const rawMetadata = doc?.metadata;
+    let metadata: Record<string, any> = {};
+
+    if (rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)) {
+        metadata = rawMetadata;
+    } else if (typeof rawMetadata === 'string') {
+        try {
+            metadata = JSON.parse(rawMetadata);
+        } catch {
+            metadata = {};
+        }
+    }
+
+    const lifecycleState = metadata.lifecycle_state === 'archived' || metadata.lifecycle_state === 'superseded'
+        ? metadata.lifecycle_state
+        : 'active';
+
+    return {
+        metadata,
+        lifecycleState,
+        archivedAt: metadata.archived_at || null,
+        archivedReason: metadata.archived_reason || null,
+        supersededByDocumentId: metadata.superseded_by_document_id || null,
+        supersedesDocumentId: metadata.supersedes_document_id || null
+    };
+}
+
 function getExtractionSignalCount(doc: any, normalized: ReturnType<typeof getNormalizedParsedMetadata>) {
     const extracted = doc?.extracted || {};
     let signals = 0;
@@ -167,6 +195,27 @@ function getExtractionSignalCount(doc: any, normalized: ReturnType<typeof getNor
 
 function buildLockerState(doc: any, linkedClaimCount: number, strongestMatchConfidence: number | null, extractionSignalCount: number) {
     const parserStatus = getAuthoritativeParserStatus(doc);
+    const lifecycle = getDocumentLifecycle(doc);
+
+    if (lifecycle.lifecycleState === 'archived') {
+        return {
+            evidence_state: 'Archived',
+            usable_as_evidence: false,
+            usability_reason: linkedClaimCount > 0
+                ? 'Archived from new evidence work. Its recorded recovery relationships remain available for historical inspection.'
+                : 'Archived from new evidence work. The original artifact and provenance remain preserved.',
+            needs_review: false
+        };
+    }
+
+    if (lifecycle.lifecycleState === 'superseded') {
+        return {
+            evidence_state: 'Superseded',
+            usable_as_evidence: false,
+            usability_reason: 'Replaced by a newer recorded artifact. Historical provenance and recovery relationships remain preserved.',
+            needs_review: false
+        };
+    }
 
     if (parserStatus === 'failed') {
         return {
@@ -699,7 +748,12 @@ router.get('/inventory', async (req: Request, res: Response) => {
                 evidence_state: lockerState.evidence_state,
                 usable_as_evidence: lockerState.usable_as_evidence,
                 usability_reason: lockerState.usability_reason,
-                needs_review: lockerState.needs_review
+                needs_review: lockerState.needs_review,
+                lifecycle_state: getDocumentLifecycle(doc).lifecycleState,
+                archived_at: getDocumentLifecycle(doc).archivedAt,
+                archived_reason: getDocumentLifecycle(doc).archivedReason,
+                superseded_by_document_id: getDocumentLifecycle(doc).supersededByDocumentId,
+                supersedes_document_id: getDocumentLifecycle(doc).supersedesDocumentId
             };
         });
 
@@ -1129,11 +1183,183 @@ router.get('/:id/generate-pdf', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/documents/:id/archive
+ * Preserve a document and its recorded relationships while removing it from new evidence work.
+ */
+router.post('/:id/archive', async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId;
+        const docId = req.params.id;
+        const reason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+            ? req.body.reason.trim().slice(0, 500)
+            : 'Archived by seller';
+
+        if (!tenantId) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+
+        const { data: doc, error: docError } = await supabaseAdmin
+            .from('evidence_documents')
+            .select('id, filename, metadata')
+            .eq('id', docId)
+            .eq('tenant_id', tenantId)
+            .single();
+
+        if (docError || !doc) {
+            return res.status(404).json({ success: false, error: 'Document not found' });
+        }
+
+        const { count: linkedCaseCount, error: linkError } = await supabaseAdmin
+            .from('dispute_evidence_links')
+            .select('*', { count: 'exact', head: true })
+            .eq('evidence_document_id', docId)
+            .eq('tenant_id', tenantId);
+
+        if (linkError) throw linkError;
+
+        const lifecycle = getDocumentLifecycle(doc);
+        const archivedAt = new Date().toISOString();
+        const nextMetadata = {
+            ...lifecycle.metadata,
+            lifecycle_state: 'archived',
+            archived_at: archivedAt,
+            archived_reason: reason,
+            archived_by: userId,
+            archived_linked_case_count: linkedCaseCount || 0
+        };
+
+        const { error: updateError } = await supabaseAdmin
+            .from('evidence_documents')
+            .update({ metadata: nextMetadata, updated_at: archivedAt })
+            .eq('id', docId)
+            .eq('tenant_id', tenantId);
+
+        if (updateError) throw updateError;
+
+        await evidenceAuditService.logManualEdit(
+            docId,
+            userId,
+            'lifecycle_state',
+            lifecycle.lifecycleState,
+            'archived'
+        );
+
+        res.json({
+            success: true,
+            message: (linkedCaseCount || 0) > 0
+                ? 'Document archived from new evidence work. Its recorded recovery relationships remain available for historical inspection.'
+                : 'Document archived. The original artifact and provenance remain preserved.',
+            documentId: docId,
+            linkedCaseCount: linkedCaseCount || 0,
+            lifecycle_state: 'archived'
+        });
+    } catch (error: any) {
+        logger.error('❌ [DOCUMENTS] Archive error', { docId: req.params.id, error: error?.message || String(error) });
+        res.status(500).json({ success: false, error: 'Failed to archive document' });
+    }
+});
+
+/**
+ * POST /api/documents/:id/supersede
+ * Preserve the original artifact while recording its replacement lineage.
+ */
+router.post('/:id/supersede', async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
+        const tenantId = (req as any).tenant?.tenantId;
+        const docId = req.params.id;
+        const replacementDocumentId = String(req.body?.replacementDocumentId || '').trim();
+
+        if (!tenantId) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+        if (!replacementDocumentId || replacementDocumentId === docId) {
+            return res.status(400).json({ success: false, error: 'A different replacement document is required' });
+        }
+
+        const [{ data: original, error: originalError }, { data: replacement, error: replacementError }] = await Promise.all([
+            supabaseAdmin.from('evidence_documents').select('id, filename, metadata').eq('id', docId).eq('tenant_id', tenantId).single(),
+            supabaseAdmin.from('evidence_documents').select('id, filename, metadata').eq('id', replacementDocumentId).eq('tenant_id', tenantId).single()
+        ]);
+
+        if (originalError || !original || replacementError || !replacement) {
+            return res.status(404).json({ success: false, error: 'Original or replacement document not found in this workspace' });
+        }
+
+        const supersededAt = new Date().toISOString();
+        const originalLifecycle = getDocumentLifecycle(original);
+        const replacementLifecycle = getDocumentLifecycle(replacement);
+
+        const { error: originalUpdateError } = await supabaseAdmin
+            .from('evidence_documents')
+            .update({
+                metadata: {
+                    ...originalLifecycle.metadata,
+                    lifecycle_state: 'superseded',
+                    superseded_at: supersededAt,
+                    superseded_by_document_id: replacementDocumentId,
+                    superseded_by_filename: replacement.filename,
+                    superseded_by: userId
+                },
+                updated_at: supersededAt
+            })
+            .eq('id', docId)
+            .eq('tenant_id', tenantId);
+
+        if (originalUpdateError) throw originalUpdateError;
+
+        const { error: replacementUpdateError } = await supabaseAdmin
+            .from('evidence_documents')
+            .update({
+                metadata: {
+                    ...replacementLifecycle.metadata,
+                    supersedes_document_id: docId,
+                    supersedes_filename: original.filename,
+                    supersession_recorded_at: supersededAt
+                },
+                updated_at: supersededAt
+            })
+            .eq('id', replacementDocumentId)
+            .eq('tenant_id', tenantId);
+
+        if (replacementUpdateError) throw replacementUpdateError;
+
+        await Promise.all([
+            evidenceAuditService.logManualEdit(docId, userId, 'lifecycle_state', originalLifecycle.lifecycleState, 'superseded'),
+            evidenceAuditService.logManualEdit(replacementDocumentId, userId, 'supersedes_document_id', String(replacementLifecycle.supersedesDocumentId || ''), docId)
+        ]);
+
+        res.json({
+            success: true,
+            message: 'Replacement recorded. The original artifact remains historically inspectable with its recovery relationships preserved.',
+            documentId: docId,
+            replacementDocumentId,
+            lifecycle_state: 'superseded'
+        });
+    } catch (error: any) {
+        logger.error('❌ [DOCUMENTS] Supersede error', { docId: req.params.id, error: error?.message || String(error) });
+        res.status(500).json({ success: false, error: 'Failed to record replacement' });
+    }
+});
+
+/**
  * DELETE /api/documents/:id
- * Delete a document from storage and database
+ * Legacy destructive deletion is intentionally disabled to preserve evidence provenance.
  */
 router.delete('/:id', async (req: Request, res: Response) => {
     try {
+        const tenantId = (req as any).tenant?.tenantId;
+        if (!tenantId) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+
+        return res.status(409).json({
+            success: false,
+            error: 'Destructive deletion is disabled to preserve evidence provenance. Archive this document or record a replacement instead.',
+            lifecycle_action: 'archive_or_supersede'
+        });
+
         const userId = (req as any).userId || (req as any).user?.id || (req as any).user?.user_id || 'demo-user';
         const docId = req.params.id;
         const finalUserId = convertUserIdToUuid(userId);
