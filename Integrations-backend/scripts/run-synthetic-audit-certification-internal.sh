@@ -18,6 +18,7 @@ cd "$ROOT_DIR"
   tests/services/enhancedDetectionService.syntheticTraining.test.ts \
   tests/services/auditRunService.syntheticTraining.test.ts \
   tests/services/auditRunService.csvUpload.test.ts \
+  tests/services/auditRunService.manualReadModel.test.ts \
   tests/services/csvDetectionFallbackSafety.test.ts \
   tests/routes/detectionRoutes.syntheticBoundary.test.ts \
   tests/routes/csvUploadRoutes.syntheticTraining.test.ts \

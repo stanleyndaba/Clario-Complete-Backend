@@ -108,6 +108,22 @@ function getInventoryFamilyKey(result: any): string | null {
   return sku ? `sku:${sku}` : null;
 }
 
+/**
+ * Cross-rail ownership requires a shared hard source reference and compatible
+ * observed item identity. An explicit FNSKU conflict is never relaxed to SKU.
+ * If FNSKU is missing on one side, equal observed SKU is the existing weaker
+ * fallback; no identity is manufactured.
+ */
+function hasCompatibleInventoryIdentity(left: any, right: any): boolean {
+  const leftFnsku = normalizeFamilyValue(getFnskuFromResult(left));
+  const rightFnsku = normalizeFamilyValue(getFnskuFromResult(right));
+  if (leftFnsku && rightFnsku) return leftFnsku === rightFnsku;
+
+  const leftSku = normalizeFamilyValue(getSkuFromResult(left));
+  const rightSku = normalizeFamilyValue(getSkuFromResult(right));
+  return Boolean(leftSku && rightSku && leftSku === rightSku);
+}
+
 function getWhaleTransferReferenceIds(result: DetectionResult): string[] {
   const evidence = result.evidence || {};
   const directIds = Array.isArray(evidence.transfer_reference_ids)
@@ -170,6 +186,7 @@ function adjudicateWhaleMultiRailOverlaps(results: DetectionResult[]): {
 } {
   const transferResultsById = new Map<string, DetectionResult>();
   const inboundResultsByFamily = new Map<string, DetectionResult[]>();
+  const inboundResultsByShipment = new Map<string, DetectionResult[]>();
 
   for (const result of results) {
     if (result.anomaly_type === 'warehouse_transfer_loss') {
@@ -192,6 +209,13 @@ function adjudicateWhaleMultiRailOverlaps(results: DetectionResult[]): {
       const rows = inboundResultsByFamily.get(familyKey) || [];
       rows.push(result);
       inboundResultsByFamily.set(familyKey, rows);
+
+      const shipmentId = getShipmentIdFromResult(result);
+      if (shipmentId) {
+        const byShipment = inboundResultsByShipment.get(shipmentId) || [];
+        byShipment.push(result);
+        inboundResultsByShipment.set(shipmentId, byShipment);
+      }
     }
   }
 
@@ -205,8 +229,7 @@ function adjudicateWhaleMultiRailOverlaps(results: DetectionResult[]): {
     const matchingTransferIds = getWhaleTransferReferenceIds(result)
       .filter((transferId) => transferResultsById.has(transferId));
 
-    if (matchingTransferIds.length === 0) continue;
-
+    if (matchingTransferIds.length > 0) {
     overlapCount += 1;
     overlappedValue += Number(result.estimated_value || 0);
 
@@ -251,6 +274,58 @@ function adjudicateWhaleMultiRailOverlaps(results: DetectionResult[]): {
           original_estimated_value: Number(transferResult.estimated_value || 0),
           authoritative_detector: 'Transfer Auditor',
         }
+      };
+    }
+    }
+
+    const matchingInboundResults = getWhaleTransferReferenceIds(result)
+      .flatMap((referenceId) => inboundResultsByShipment.get(referenceId) || [])
+      .filter((inboundResult) => hasCompatibleInventoryIdentity(result, inboundResult));
+    if (!matchingInboundResults.length) continue;
+
+    const matchingShipmentIds = [...new Set(matchingInboundResults
+      .map((inboundResult) => getShipmentIdFromResult(inboundResult))
+      .filter((shipmentId): shipmentId is string => Boolean(shipmentId)))];
+    overlapCount += 1;
+    overlappedValue += Number(result.estimated_value || 0);
+
+    result.evidence = {
+      ...(result.evidence || {}),
+      cross_rail_overlap: {
+        status: 'overlaps_inbound_inspector',
+        authoritative_detector: 'Inbound Inspector',
+        linked_detector: 'Whale Hunter',
+        linked_shipment_ids: matchingShipmentIds,
+        overlap_reason: 'Inbound Inspector owns economic value when its shipment identifier matches a Whale Hunter transfer reference with compatible item identity.',
+      },
+      economic_rollup: {
+        status: 'linked_not_counted',
+        counted_value: 0,
+        original_estimated_value: Number(result.estimated_value || 0),
+        authoritative_detector: 'Inbound Inspector',
+        linked_shipment_ids: matchingShipmentIds,
+      },
+    };
+
+    for (const inboundResult of matchingInboundResults) {
+      const existingWhaleReferences = Array.isArray(inboundResult.evidence?.cross_rail_overlap?.linked_whale_reference_ids)
+        ? inboundResult.evidence.cross_rail_overlap.linked_whale_reference_ids
+        : [];
+      inboundResult.evidence = {
+        ...(inboundResult.evidence || {}),
+        cross_rail_overlap: {
+          status: 'authoritative_inbound_shipment_loss',
+          authoritative_detector: 'Inbound Inspector',
+          linked_detector: 'Whale Hunter',
+          linked_whale_reference_ids: [...new Set([...existingWhaleReferences, ...getWhaleTransferReferenceIds(result)])],
+          overlap_reason: 'Canonical inbound shipment evidence owns economic value when its shipment identifier matches a Whale Hunter transfer reference with compatible item identity.',
+        },
+        economic_rollup: {
+          status: 'counted',
+          counted_value: Number(inboundResult.estimated_value || 0),
+          original_estimated_value: Number(inboundResult.estimated_value || 0),
+          authoritative_detector: 'Inbound Inspector',
+        },
       };
     }
   }

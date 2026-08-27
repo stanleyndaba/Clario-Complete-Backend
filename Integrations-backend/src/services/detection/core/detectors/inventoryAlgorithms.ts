@@ -76,6 +76,9 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
 
     const cleanLedger = deduplicateLedger(ledger);
     const fnskuGroups = groupByFnsku(cleanLedger);
+    // Shared for this detection run so a reimbursement quantity cannot be
+    // allocated to more than one independent FNSKU loss group.
+    const consumedReimbursementQuantity = new Map<any, number>();
     const results: DetectionResult[] = [];
     results.push(...detectFoundWithoutPriorLossReview(sellerId, syncId, cleanLedger));
 
@@ -201,6 +204,7 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
 
         let warehouseIn = 0; let warehouseOut = 0;
         let claimAdj = 0; let resolveAdj = 0;
+        const claimAdjustmentDates: string[] = [];
         const fcs = new Set<string>();
         for (const e of sorted) {
             if (e.fulfillment_center_id) fcs.add(e.fulfillment_center_id);
@@ -218,6 +222,7 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
                     && (['M', 'E', 'D', 'N'].includes(e.reason || '') || !e.reason)
                 ) {
                     claimAdj += q;
+                    claimAdjustmentDates.push(e.event_date);
                 }
             }
         }
@@ -229,8 +234,33 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
         const physicalLoss = Math.max(0, matureUnresolved, balanceGap, netAdj);
 
         if (physicalLoss > 0.1) {
-            const firstLossDate = sorted.find(e => e.quantity_direction === 'out')?.event_date || new Date().toISOString();
-            const reData = findReimbursements(fnsku, sorted[0].sku, data.financial_events || [], firstLossDate, sellerId, [...fcs][0]);
+            // A reimbursement can only offset source loss evidence that already
+            // existed. Where multiple equally dominant bases contribute, the
+            // latest contributing date is conservative and prevents a payment
+            // from offsetting a later unobserved component.
+            const contributingLossDates = [
+                ...(matureUnresolved === physicalLoss
+                    ? transferLossFamilies.map((family) => family.transfer_out_date)
+                    : []),
+                ...(balanceGap === physicalLoss && latestSnap?.event_date
+                    ? [latestSnap.event_date]
+                    : []),
+                ...(netAdj === physicalLoss ? claimAdjustmentDates : []),
+            ]
+                .filter((date) => Number.isFinite(Date.parse(date)))
+                .sort((left, right) => Date.parse(left) - Date.parse(right));
+            const applicableLossDate = contributingLossDates[contributingLossDates.length - 1]
+                || sorted.find(e => e.quantity_direction === 'out')?.event_date;
+            if (!applicableLossDate) continue;
+            const reData = findReimbursements(
+                fnsku,
+                sorted[0].sku,
+                data.financial_events || [],
+                applicableLossDate,
+                sellerId,
+                [...fcs][0],
+                consumedReimbursementQuantity,
+            );
             
             let nettingFactor = 0;
             if (['DIRECT_ID', 'CAUSAL'].includes(reData.linkage)) nettingFactor = 1.0;
@@ -267,7 +297,7 @@ export function detectLostInventory(sellerId: string, syncId: string, data: Sync
                     sku: sorted[0].sku,
                     fnsku,
                     asin: sorted[0].asin,
-                    eventDate: firstLossDate,
+                    eventDate: applicableLossDate,
                     valueType: 'REIMBURSEMENT_RATE',
                     valuationContext: data.valuation_context,
                     localCandidates,
@@ -397,13 +427,34 @@ function deduplicateLedger(events: InventoryLedgerEvent[]): InventoryLedgerEvent
     return [...results.values()];
 }
 
-function findReimbursements(fnsku: string, sku: string | undefined, events: any[], lossDate: string, sellerId: string, fc?: string): { 
-    totalMatched: number, fullNetUnits: number, partialNetUnits: number, linkage: ReimbursementLinkageType, modifier: number 
+function isReimbursementClassEvent(event: any): boolean {
+    // Semantic admission is mandatory: amount, sign, quantity, identity,
+    // fulfillment center, or date proximity cannot turn another financial
+    // event (such as a fee or refund) into reimbursement evidence.
+    return String(event?.event_type || '').trim().toLowerCase() === 'reimbursement';
+}
+
+function findReimbursements(
+    fnsku: string,
+    sku: string | undefined,
+    events: any[],
+    lossDate: string,
+    sellerId: string,
+    fc?: string,
+    consumedQuantity: Map<any, number> = new Map<any, number>(),
+): {
+    totalMatched: number, fullNetUnits: number, partialNetUnits: number, linkage: ReimbursementLinkageType, modifier: number
 } {
     let totalMatched = 0; let fullNetUnits = 0; let partialNetUnits = 0; let best: ReimbursementLinkageType = 'NONE';
     const targetFnsku = fnsku.trim().toUpperCase();
     const targetSku = String(sku || '').trim().toUpperCase();
+    const lossTime = Date.parse(lossDate);
+    if (!Number.isFinite(lossTime)) {
+        return { totalMatched, fullNetUnits, partialNetUnits, linkage: best, modifier: 0 };
+    }
+
     for (const re of events) {
+        if (!isReimbursementClassEvent(re)) continue;
         if (re.seller_id && re.seller_id !== sellerId) continue;
         const reimbursementFnsku = String(re.fnsku || '').trim().toUpperCase();
         const reimbursementSku = String(re.sku || '').trim().toUpperCase();
@@ -411,10 +462,14 @@ function findReimbursements(fnsku: string, sku: string | undefined, events: any[
             ? reimbursementFnsku === targetFnsku
             : Boolean(targetSku && reimbursementSku && reimbursementSku === targetSku);
         if (!matchesIdentity) continue;
-        const reDate = new Date(re.approval_date || re.created_at || re.date); const lDate = new Date(lossDate);
-        const diff = Math.abs(reDate.getTime() - lDate.getTime()) / (1000 * 3600 * 24);
-        const qty = Number(re.quantity);
-        if (!Number.isFinite(qty) || qty <= 0) continue;
+
+        const reimbursementTime = Date.parse(re.approval_date || re.created_at || re.date);
+        if (!Number.isFinite(reimbursementTime) || reimbursementTime < lossTime) continue;
+        const diff = (reimbursementTime - lossTime) / (1000 * 3600 * 24);
+        const sourceQuantity = Number(re.quantity);
+        if (!Number.isFinite(sourceQuantity) || sourceQuantity <= 0) continue;
+        const availableQuantity = Math.max(0, sourceQuantity - (consumedQuantity.get(re) || 0));
+        if (availableQuantity <= 0) continue;
 
         let link: ReimbursementLinkageType = 'NONE';
         if (fc && (re.fulfillment_center_id === fc || re.fulfillmentCenterId === fc) && diff <= 90) link = 'CAUSAL';
@@ -422,16 +477,17 @@ function findReimbursements(fnsku: string, sku: string | undefined, events: any[
         else if (diff <= 180) link = 'WEAK';
 
         if (link !== 'NONE') {
-            totalMatched += qty;
-            if (['DIRECT_ID', 'CAUSAL', 'PROBABLE'].includes(link)) fullNetUnits += qty;
-            else if (link === 'WEAK') partialNetUnits += qty;
+            totalMatched += availableQuantity;
+            consumedQuantity.set(re, (consumedQuantity.get(re) || 0) + availableQuantity);
+            if (['DIRECT_ID', 'CAUSAL', 'PROBABLE'].includes(link)) fullNetUnits += availableQuantity;
+            else if (link === 'WEAK') partialNetUnits += availableQuantity;
             const p: Record<string, number> = { 'DIRECT_ID': 5, 'CAUSAL': 4, 'PROBABLE': 3, 'WEAK': 2, 'NONE': 0 };
             if (p[link] > (p[best] || 0)) best = link;
         }
     }
-    return { 
-        totalMatched, fullNetUnits, partialNetUnits, linkage: best, 
-        modifier: (best === 'PROBABLE' ? -0.05 : (best === 'WEAK' ? -0.1 : 0)) 
+    return {
+        totalMatched, fullNetUnits, partialNetUnits, linkage: best,
+        modifier: (best === 'PROBABLE' ? -0.05 : (best === 'WEAK' ? -0.1 : 0))
     };
 }
 

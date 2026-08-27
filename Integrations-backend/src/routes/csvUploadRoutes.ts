@@ -29,6 +29,10 @@ import {
 const router = Router();
 const CSV_UPLOAD_BREAKER_BYPASS = ['filing-auto-dispatch'] as const;
 
+function hasUsableCsvRowsForManualAudit(result: { detectionTriggered?: boolean; results?: Array<{ success?: boolean; rowsInserted?: number }> }): boolean {
+    return Boolean(result.detectionTriggered) && Boolean(result.results?.some((file) => file.success && Number(file.rowsInserted || 0) > 0));
+}
+
 async function resolveManualAuditForCsvRun(input: {
     userId: string;
     tenantId: string;
@@ -167,7 +171,7 @@ router.post('/ingest', requireActiveTenant, upload.array('files', 10), async (re
                 ? req.query.auditIntentId.trim()
                 : null;
 
-        const manualAudit = result.success
+        const manualAudit = hasUsableCsvRowsForManualAudit(result)
             ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId, auditIntentId })
             : null;
         return res.status(statusCode).json({ ...result, manualAudit });
@@ -222,7 +226,7 @@ router.post('/synthetic-training/ingest', requireActiveTenant, upload.array('fil
             storeId,
             tenantId,
         });
-        const manualAudit = result.success
+        const manualAudit = hasUsableCsvRowsForManualAudit(result)
             ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId, auditIntentId: null })
             : null;
 
@@ -353,7 +357,7 @@ router.post('/ingest/:type', requireActiveTenant, upload.array('files', 10), asy
                 ? req.query.auditIntentId.trim()
                 : null;
 
-        const manualAudit = result.success
+        const manualAudit = hasUsableCsvRowsForManualAudit(result)
             ? await resolveManualAuditForCsvRun({ userId, tenantId, syncId: result.syncId, storeId, auditIntentId })
             : null;
         return res.status(statusCode).json({ ...result, manualAudit });

@@ -148,6 +148,75 @@ describe('synthetic training multipart route contract', () => {
     expect(ingestFiles).not.toHaveBeenCalled();
   });
 
+  it('creates a limited manual audit for a mixed batch only when a valid file produced usable rows and detection began', async () => {
+    ingestFiles.mockResolvedValueOnce({
+      success: false,
+      syncId: 'csv_route_partial_test',
+      detectionTriggered: true,
+      results: [
+        { success: true, fileName: 'orders_valid.csv', rowsInserted: 1 },
+        { success: false, fileName: 'orders_ambiguous.csv', rowsInserted: 0, inputIssue: 'ambiguous' },
+      ],
+    });
+
+    const response = await attachCanonicalCsv(request(createApp()).post('/api/csv-upload/ingest'));
+
+    expect(response.status).toBe(207);
+    expect(response.body.manualAudit).toEqual({ id: 'audit-test' });
+    expect(createOrResumeCsvAuditFromSync).toHaveBeenCalledWith(expect.objectContaining({
+      userId: USER_ID,
+      tenantId: TRAINING_TENANT,
+      syncId: 'csv_route_partial_test',
+    }));
+  });
+
+  it('returns duplicate-reused truth without creating a second manual audit for a duplicate-only multipart replay', async () => {
+    ingestFiles.mockResolvedValueOnce({
+      success: false,
+      syncId: 'csv_route_duplicate_retry',
+      submissionDisposition: 'duplicate_reused',
+      detectionTriggered: false,
+      results: [
+        {
+          success: true,
+          fileName: 'orders_copy.csv',
+          rowsInserted: 0,
+          rowsSkipped: 1,
+          errors: ['Duplicate file upload detected; ingestion skipped.'],
+          detectionTriggered: false,
+        },
+      ],
+    });
+
+    const response = await attachCanonicalCsv(request(createApp()).post('/api/csv-upload/ingest'));
+
+    expect(response.status).toBe(207);
+    expect(response.body).toEqual(expect.objectContaining({
+      submissionDisposition: 'duplicate_reused',
+      detectionTriggered: false,
+      manualAudit: null,
+    }));
+    expect(createOrResumeCsvAuditFromSync).not.toHaveBeenCalled();
+  });
+
+  it('does not create a manual audit when every uploaded file was rejected or empty', async () => {
+    ingestFiles.mockResolvedValueOnce({
+      success: false,
+      syncId: 'csv_route_rejected_test',
+      detectionTriggered: false,
+      results: [
+        { success: false, fileName: 'orders_malformed.csv', rowsInserted: 0, inputIssue: 'malformed' },
+        { success: false, fileName: 'unknown.csv', rowsInserted: 0, inputIssue: 'unsupported' },
+      ],
+    });
+
+    const response = await attachCanonicalCsv(request(createApp()).post('/api/csv-upload/ingest'));
+
+    expect(response.status).toBe(207);
+    expect(response.body.manualAudit).toBeNull();
+    expect(createOrResumeCsvAuditFromSync).not.toHaveBeenCalled();
+  });
+
   it('keeps the ordinary CSV route ordinary even if a caller injects synthetic provenance metadata', async () => {
     const response = await attachCanonicalCsv(
       request(createApp())

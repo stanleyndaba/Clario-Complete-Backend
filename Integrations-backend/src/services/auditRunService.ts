@@ -37,17 +37,89 @@ type AuditRunStatus =
   | 'failed'
   | 'activated';
 
+type ManualInputIssue = 'empty' | 'malformed' | 'ambiguous' | 'unsupported' | 'missing_required' | 'invalid_value' | 'prohibited';
+type ManualTemporalEvidenceStatus = 'available' | 'partial' | 'unavailable';
+type ManualReportFileTemporalEvidence = {
+  status: ManualTemporalEvidenceStatus;
+  sourceDateField: string | null;
+  earliestAt: string | null;
+  latestAt: string | null;
+  observedDateCount: number;
+  continuity: 'unknown';
+  reason?: string;
+};
+type ManualReportFileProcessing = {
+  fileName: string;
+  status: 'accepted' | 'ingested' | 'duplicate' | 'failed';
+  sourceFamily: string | null;
+  rowsParsed: number;
+  rowsAccepted: number;
+  rowsSkipped: number;
+  rowsRejected: number;
+  inputIssue?: ManualInputIssue;
+  errorSummary?: string;
+  temporalEvidence?: ManualReportFileTemporalEvidence;
+};
+
+type ManualReportProcessingSummary = {
+  source: 'manual_upload';
+  filesReceived: number;
+  filesAccepted: number;
+  filesProcessed: number;
+  filesFailed: number;
+  rowsParsed: number;
+  rowsAccepted: number;
+  rowsSkipped: number;
+  rowsRejected: number;
+  sourceFamilies: string[];
+  sourceFamiliesNotRepresented: string[];
+  files: ManualReportFileProcessing[];
+};
+
+type ManualCoverageStatus = 'supported' | 'partial' | 'unavailable';
+type ManualCoverageArea = {
+  key: 'whale_hunter' | 'refund_trap' | 'broken_goods' | 'fee_phantom' | 'inbound_inspector' | 'sentinel';
+  label: string;
+  status: ManualCoverageStatus;
+  providedSources: string[];
+  missingSources: string[];
+  monetaryConclusion: 'within_covered_evidence' | 'unknown_outside_coverage';
+  reason: string;
+};
+type ManualTemporalCoverageAssessment = {
+  overallStatus: 'partial' | 'no_usable_temporal_evidence';
+  suppliedPeriod: { earliestAt: string; latestAt: string } | null;
+  requestedPeriod: 'not_recorded';
+  continuity: 'unknown';
+  datedFiles: number;
+  unavailableFiles: number;
+  partialFiles: number;
+  overlapDetected: boolean;
+  reason: string;
+};
+type ManualCoverageAssessment = {
+  source: 'manual_upload';
+  overallStatus: 'complete' | 'partial' | 'no_data';
+  evaluatedAreas: string[];
+  unavailableAreas: string[];
+  areas: ManualCoverageArea[];
+  temporal: ManualTemporalCoverageAssessment;
+};
+
 type AuditSummary = {
   scopeValue: number;
   findingsCount: number;
   categories: string[];
   evidenceReadyCount: number;
+  reviewOnlyCount?: number;
   locked: boolean;
   message: string;
   finalStatus?: 'complete_with_findings' | 'complete_no_findings' | 'partial_with_findings' | 'partial_no_findings' | 'failed';
   recordsReviewed?: number;
   sourcesReviewed?: string[];
   sourcesUnavailable?: string[];
+  manualReport?: ManualReportProcessingSummary;
+  manualCoverage?: ManualCoverageAssessment;
   retryable?: boolean;
   commercialState?: string;
   commercialRoute?: string;
@@ -74,6 +146,7 @@ const EMPTY_SUMMARY: AuditSummary = {
   findingsCount: 0,
   categories: [],
   evidenceReadyCount: 0,
+  reviewOnlyCount: 0,
   locked: true,
   message: 'Connect Amazon to run your free recovery audit.'
 };
@@ -83,6 +156,7 @@ const SYNC_BACKLOG_SUMMARY: AuditSummary = {
   findingsCount: 0,
   categories: [],
   evidenceReadyCount: 0,
+  reviewOnlyCount: 0,
   locked: true,
   message: 'Amazon is connected. Margin will resume the audit when sync capacity is available.'
 };
@@ -92,6 +166,7 @@ const SYNC_IN_PROGRESS_SUMMARY: AuditSummary = {
   findingsCount: 0,
   categories: [],
   evidenceReadyCount: 0,
+  reviewOnlyCount: 0,
   locked: true,
   message: 'Amazon data is still syncing. Continue the audit again once the sync finishes.'
 };
@@ -101,6 +176,7 @@ const SAFE_AUDIT_FAILURE_SUMMARY: AuditSummary = {
   findingsCount: 0,
   categories: [],
   evidenceReadyCount: 0,
+  reviewOnlyCount: 0,
   locked: true,
   message: 'Margin could not complete the audit automatically. Retry after the Amazon connection settles.'
 };
@@ -210,6 +286,276 @@ function getRecordsReviewedFromMetadata(metadata: Record<string, any>): number {
     metadata.settlementsCount,
     metadata.feesCount
   ].reduce((sum, value) => sum + numberFrom(value), 0);
+}
+
+const MANUAL_REPORT_SOURCE_LABELS: Record<string, string> = {
+  orders: 'Orders',
+  shipments: 'Shipments',
+  returns: 'Returns',
+  settlements: 'Settlements',
+  financial_events: 'Financial events',
+  fees: 'Fees',
+  inventory: 'Inventory ledger',
+  transfers: 'Transfers',
+};
+
+function readNonNegativeCount(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+const MANUAL_INPUT_ISSUES: ManualInputIssue[] = ['empty', 'malformed', 'ambiguous', 'unsupported', 'missing_required', 'invalid_value', 'prohibited'];
+
+function safeManualInputIssueSummary(inputIssue: ManualInputIssue | undefined, failed: boolean): string | undefined {
+  if (!inputIssue) return failed ? 'Margin could not safely process this uploaded file.' : undefined;
+  const summaries: Record<ManualInputIssue, string> = {
+    empty: 'The file was accepted, but it contained no usable data rows.',
+    malformed: 'The file structure could not be safely interpreted.',
+    ambiguous: 'The headers match more than one supported report family, so Margin did not guess a mapping.',
+    unsupported: 'The file structure does not match a supported report family.',
+    missing_required: 'A required header or critical field was missing.',
+    invalid_value: 'A critical value could not be safely interpreted.',
+    prohibited: 'This file contains Transfer evidence, which Margin cannot accept while Transfer is OFF. It was not used for this audit.',
+  };
+  return summaries[inputIssue];
+}
+
+function normalizeManualReportFileTemporalEvidence(value: unknown): ManualReportFileTemporalEvidence | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const status = raw.status;
+  if (status !== 'available' && status !== 'partial' && status !== 'unavailable') return undefined;
+  const normalizeStoredIso = (date: unknown): string | null => {
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(date)) return null;
+    return Number.isNaN(Date.parse(date)) ? null : date;
+  };
+  const earliestAt = normalizeStoredIso(raw.earliestAt);
+  const latestAt = normalizeStoredIso(raw.latestAt);
+  const observedDateCount = readNonNegativeCount(raw.observedDateCount);
+  if (status !== 'unavailable' && (!earliestAt || !latestAt || observedDateCount <= 0)) {
+    return {
+      status: 'unavailable',
+      sourceDateField: typeof raw.sourceDateField === 'string' ? raw.sourceDateField : null,
+      earliestAt: null,
+      latestAt: null,
+      observedDateCount: 0,
+      continuity: 'unknown',
+      reason: 'Stored temporal facts were incomplete or invalid and do not establish coverage.',
+    };
+  }
+  return {
+    status,
+    sourceDateField: typeof raw.sourceDateField === 'string' ? raw.sourceDateField : null,
+    earliestAt: status === 'unavailable' ? null : earliestAt,
+    latestAt: status === 'unavailable' ? null : latestAt,
+    observedDateCount: status === 'unavailable' ? 0 : observedDateCount,
+    continuity: 'unknown',
+    reason: typeof raw.reason === 'string' ? raw.reason : undefined,
+  };
+}
+
+function buildManualReportProcessingSummary(uploadRun: any): ManualReportProcessingSummary {
+  const rawFiles = Array.isArray(uploadRun?.files_summary)
+    ? uploadRun.files_summary
+    : Array.isArray(uploadRun?.ingestion_results)
+      ? uploadRun.ingestion_results
+      : [];
+  const files = rawFiles.map((raw: any): ManualReportFileProcessing => {
+    const rawStatus = String(raw?.status || '').trim().toLowerCase();
+    const status = rawStatus === 'ingested' || rawStatus === 'duplicate' || rawStatus === 'failed'
+      ? rawStatus
+      : 'accepted';
+    const csvType = String(raw?.csvType || raw?.csv_type || '').trim();
+    const rawInputIssue = String(raw?.inputIssue || raw?.input_issue || '').trim();
+    const inputIssue = MANUAL_INPUT_ISSUES.includes(rawInputIssue as ManualInputIssue)
+      ? rawInputIssue as ManualInputIssue
+      : undefined;
+    return {
+      fileName: String(raw?.fileName || raw?.originalname || 'Unknown file'),
+      status,
+      sourceFamily: MANUAL_REPORT_SOURCE_LABELS[csvType] || null,
+      rowsParsed: readNonNegativeCount(raw?.rowsProcessed ?? raw?.rows_processed),
+      rowsAccepted: readNonNegativeCount(raw?.rowsInserted ?? raw?.rows_inserted),
+      rowsSkipped: readNonNegativeCount(raw?.rowsSkipped ?? raw?.rows_skipped),
+      rowsRejected: readNonNegativeCount(raw?.rowsFailed ?? raw?.rows_failed),
+      inputIssue,
+      errorSummary: safeManualInputIssueSummary(inputIssue, status === 'failed'),
+      temporalEvidence: normalizeManualReportFileTemporalEvidence(raw?.temporalEvidence ?? raw?.temporal_evidence),
+    };
+  });
+  const sourceFamilies: string[] = Array.from(new Set<string>(files
+    .filter((file) => file.status !== 'failed' && file.sourceFamily)
+    .map((file) => file.sourceFamily as string)));
+  const sourceFamiliesNotRepresented = Object.entries(MANUAL_REPORT_SOURCE_LABELS)
+    .filter(([type]) => type !== 'transfers')
+    .filter(([, label]) => !sourceFamilies.includes(label))
+    .map(([, label]) => label);
+  const totalFiles = readNonNegativeCount(uploadRun?.file_count ?? uploadRun?.total_files);
+
+  return {
+    source: 'manual_upload',
+    filesReceived: totalFiles || files.length,
+    filesAccepted: files.filter((file) => file.status !== 'failed').length,
+    filesProcessed: files.filter((file) => file.status === 'ingested' || file.status === 'duplicate').length,
+    filesFailed: files.filter((file) => file.status === 'failed').length,
+    rowsParsed: files.reduce((sum, file) => sum + file.rowsParsed, 0),
+    rowsAccepted: files.reduce((sum, file) => sum + file.rowsAccepted, 0),
+    rowsSkipped: files.reduce((sum, file) => sum + file.rowsSkipped, 0),
+    rowsRejected: files.reduce((sum, file) => sum + file.rowsRejected, 0),
+    sourceFamilies,
+    sourceFamiliesNotRepresented,
+    files,
+  };
+}
+
+const MANUAL_EVALUATION_AREA_DEFINITIONS: Array<{
+  key: ManualCoverageArea['key'];
+  label: string;
+  requiredSources: string[];
+  manualUploadSupported: boolean;
+  unavailableReason?: string;
+}> = [
+  {
+    key: 'whale_hunter',
+    label: 'Whale Hunter — inventory loss',
+    requiredSources: ['Inventory ledger', 'Financial events', 'Settlements'],
+    manualUploadSupported: true,
+  },
+  {
+    key: 'refund_trap',
+    label: 'Refund Trap — refund without return',
+    requiredSources: ['Returns', 'Orders', 'Settlements'],
+    manualUploadSupported: true,
+  },
+  {
+    key: 'broken_goods',
+    label: 'Broken Goods Hunter — damaged returns',
+    requiredSources: ['Returns', 'Settlements'],
+    manualUploadSupported: true,
+  },
+  {
+    key: 'fee_phantom',
+    label: 'Fee Phantom — fee anomalies',
+    requiredSources: ['Fees', 'Financial events'],
+    manualUploadSupported: true,
+  },
+  {
+    key: 'inbound_inspector',
+    label: 'Inbound Inspector — inbound shipment evidence',
+    requiredSources: [],
+    manualUploadSupported: false,
+    unavailableReason: 'Requires canonical inbound source-run health and inbound shipment evidence that the supported manual report taxonomy does not provide.',
+  },
+  {
+    key: 'sentinel',
+    label: 'Sentinel — reimbursement reconciliation',
+    requiredSources: ['Inventory ledger', 'Financial events', 'Settlements'],
+    manualUploadSupported: true,
+  },
+];
+
+function buildManualTemporalCoverageAssessment(manualReport: ManualReportProcessingSummary): ManualTemporalCoverageAssessment {
+  const nonDuplicateFiles = manualReport.files.filter((file) => file.status !== 'duplicate');
+  const datedFiles = nonDuplicateFiles
+    .filter((file) => file.temporalEvidence?.status === 'available' || file.temporalEvidence?.status === 'partial')
+    .map((file) => file.temporalEvidence as ManualReportFileTemporalEvidence)
+    .filter((temporal) => temporal.earliestAt && temporal.latestAt);
+  const allDates = datedFiles
+    .flatMap((temporal) => [temporal.earliestAt, temporal.latestAt])
+    .filter((date): date is string => !!date)
+    .sort();
+  const orderedRanges = datedFiles
+    .map((temporal) => ({ start: temporal.earliestAt as string, end: temporal.latestAt as string }))
+    .sort((left, right) => left.start.localeCompare(right.start));
+  let latestEnd: string | null = null;
+  let overlapDetected = false;
+  for (const range of orderedRanges) {
+    if (latestEnd && range.start <= latestEnd) overlapDetected = true;
+    if (!latestEnd || range.end > latestEnd) latestEnd = range.end;
+  }
+
+  if (allDates.length === 0) {
+    return {
+      overallStatus: 'no_usable_temporal_evidence',
+      suppliedPeriod: null,
+      requestedPeriod: 'not_recorded',
+      continuity: 'unknown',
+      datedFiles: 0,
+      unavailableFiles: nonDuplicateFiles.length,
+      partialFiles: 0,
+      overlapDetected: false,
+      reason: 'No accepted source date was available to establish temporal coverage. This audit does not establish a covered period.',
+    };
+  }
+
+  const partialFiles = nonDuplicateFiles.filter((file) => file.temporalEvidence?.status === 'partial').length;
+  return {
+    overallStatus: 'partial',
+    suppliedPeriod: { earliestAt: allDates[0], latestAt: allDates[allDates.length - 1] },
+    requestedPeriod: 'not_recorded',
+    continuity: 'unknown',
+    datedFiles: datedFiles.length,
+    unavailableFiles: nonDuplicateFiles.length - datedFiles.length,
+    partialFiles,
+    overlapDetected,
+    reason: 'The supplied date range reflects accepted source dates only. A requested audit period and continuous day-by-day coverage were not recorded, so conditions outside represented dates remain unknown.',
+  };
+}
+
+function buildManualCoverageAssessment(manualReport: ManualReportProcessingSummary): ManualCoverageAssessment {
+  const supplied = new Set(manualReport.sourceFamilies);
+  const temporal = buildManualTemporalCoverageAssessment(manualReport);
+  const areas = MANUAL_EVALUATION_AREA_DEFINITIONS.map((definition): ManualCoverageArea => {
+    if (!definition.manualUploadSupported) {
+      return {
+        key: definition.key,
+        label: definition.label,
+        status: 'unavailable',
+        providedSources: [],
+        missingSources: [],
+        monetaryConclusion: 'unknown_outside_coverage',
+        reason: definition.unavailableReason || 'This area cannot be evaluated from the supplied manual report set.',
+      };
+    }
+
+    const providedSources = definition.requiredSources.filter((source) => supplied.has(source));
+    const missingSources = definition.requiredSources.filter((source) => !supplied.has(source));
+    const status: ManualCoverageStatus = missingSources.length === 0
+      ? 'supported'
+      : providedSources.length > 0
+        ? 'partial'
+        : 'unavailable';
+
+    return {
+      key: definition.key,
+      label: definition.label,
+      status,
+      providedSources,
+      missingSources,
+      monetaryConclusion: status === 'supported' ? 'within_covered_evidence' : 'unknown_outside_coverage',
+      reason: status === 'supported'
+        ? 'All source families required for this manual-evidence assessment were supplied.'
+        : status === 'partial'
+          ? `Only the supplied evidence can be assessed. Missing ${missingSources.join(', ')} prevents a complete conclusion; conditions outside coverage remain unknown.`
+          : `Cannot evaluate this area from the supplied reports. Missing ${missingSources.join(', ')}; conditions outside coverage remain unknown.`,
+    };
+  });
+
+  const hasUsableManualRows = manualReport.rowsAccepted > 0 || manualReport.rowsParsed > 0;
+  const overallStatus: ManualCoverageAssessment['overallStatus'] = !hasUsableManualRows
+    ? 'no_data'
+    : manualReport.sourceFamiliesNotRepresented.length === 0
+      ? 'complete'
+      : 'partial';
+
+  return {
+    source: 'manual_upload',
+    overallStatus,
+    evaluatedAreas: areas.filter((area) => area.status !== 'unavailable').map((area) => area.key),
+    unavailableAreas: areas.filter((area) => area.status === 'unavailable').map((area) => area.key),
+    areas,
+    temporal,
+  };
 }
 
 function sanitizeStatus(value: unknown): string {
@@ -1170,7 +1516,7 @@ class AuditRunService {
     cutoff.setUTCMonth(cutoff.getUTCMonth() - 18);
     let query = supabaseAdmin
       .from('audit_runs')
-      .select('id, tenant_id, store_id, sync_id, status, source_type, started_at, completed_at, created_at, updated_at, summary, activation_status, commercial_state, commercial_route')
+      .select('id, tenant_id, store_id, sync_id, status, source_type, started_at, completed_at, created_at, updated_at, summary, activation_status')
       .eq('user_id', safeUserId)
       .gte('created_at', cutoff.toISOString());
 
@@ -1187,6 +1533,9 @@ class AuditRunService {
     return (data || []).map((audit, index) => {
       const timestamp = audit.completed_at || audit.started_at || audit.created_at;
       const syntheticTraining = Boolean(resolveSyntheticAuditContextFromRecord(audit, audit.summary));
+      const manualReport = audit.source_type === 'csv_upload' && audit.summary?.manualReport?.source === 'manual_upload'
+        ? audit.summary.manualReport as ManualReportProcessingSummary
+        : undefined;
       return {
         id: audit.id,
         month: monthKey(timestamp),
@@ -1198,7 +1547,10 @@ class AuditRunService {
         started_at: audit.started_at || null,
         completed_at: audit.completed_at,
         sourceType: audit.source_type || 'sp_api',
-        recordsReviewed: audit.summary?.recordsReviewed ?? null,
+        recordsReviewed: manualReport
+          ? (manualReport.rowsAccepted || manualReport.rowsParsed)
+          : (audit.summary?.recordsReviewed ?? null),
+        manualReport,
         findingsCount: syntheticTraining ? 0 : (audit.summary?.findingsCount ?? 0),
         scopeValue: syntheticTraining ? 0 : (audit.summary?.scopeValue ?? 0),
         commercialState: syntheticTraining ? null : (audit.commercial_state || null),
@@ -1374,7 +1726,9 @@ class AuditRunService {
     const audit = await this.getAudit(auditId, userId, tenantId);
     const syntheticExecution = resolveSyntheticAuditContextFromRecord(audit, audit.summary);
     const syntheticTraining = Boolean(syntheticExecution);
-    const rawSyncStatus = audit.sync_id
+    // CSV-backed audits have authoritative per-file processing state in csv_upload_runs.
+    // Do not re-enter the connected Amazon sync rail during result restoration.
+    const rawSyncStatus = audit.sync_id && audit.source_type !== 'csv_upload'
       ? await this.getSyncStatus(audit.sync_id, audit.user_id, audit.tenant_id, audit.store_id)
       : null;
     const syncStatus = syntheticExecution
@@ -1403,6 +1757,9 @@ class AuditRunService {
 
     if (audit.status === 'completed') {
       if (syntheticTraining) {
+        if (audit.source_type === 'csv_upload') {
+          await this.updateAudit(audit.id, { summary: safeSummary });
+        }
         return {
           audit: {
             id: audit.id,
@@ -1622,6 +1979,9 @@ class AuditRunService {
   async getActivity(auditId: string, userId: string, tenantId?: string | null) {
     const audit = await this.getAudit(auditId, userId, tenantId);
     const summary = audit.summary || EMPTY_SUMMARY;
+    const manualReport = audit.source_type === 'csv_upload' && summary?.manualReport?.source === 'manual_upload'
+      ? summary.manualReport as ManualReportProcessingSummary
+      : null;
     const events: Array<{ timestamp: string; category: string; status: string; message: string }> = [];
     const started = audit.started_at || audit.created_at || new Date().toISOString();
 
@@ -1648,7 +2008,9 @@ class AuditRunService {
         timestamp: audit.updated_at || started,
         category: 'Coverage',
         status: ['syncing', 'detecting', 'completed', 'activated'].includes(audit.status) ? 'completed' : 'pending',
-        message: 'Margin started reviewing the Amazon activity available for this audit.',
+        message: manualReport
+          ? 'Margin started processing the uploaded Amazon reports supplied for this audit.'
+          : 'Margin started reviewing the Amazon activity available for this audit.',
       });
     }
 
@@ -1657,9 +2019,11 @@ class AuditRunService {
         timestamp: audit.completed_at || audit.updated_at || started,
         category: 'Coverage',
         status: 'completed',
-        message: Number(summary.recordsReviewed || 0) > 0
-          ? `Margin reviewed ${Number(summary.recordsReviewed || 0).toLocaleString()} Amazon record${Number(summary.recordsReviewed || 0) === 1 ? '' : 's'}.`
-          : 'Margin did not receive usable Amazon records for this audit. Review the coverage details before relying on this result.',
+        message: manualReport
+          ? `${manualReport.filesProcessed.toLocaleString()} uploaded file${manualReport.filesProcessed === 1 ? '' : 's'} processed; ${manualReport.rowsAccepted.toLocaleString()} row${manualReport.rowsAccepted === 1 ? '' : 's'} accepted from ${manualReport.rowsParsed.toLocaleString()} parsed.`
+          : Number(summary.recordsReviewed || 0) > 0
+            ? `Margin reviewed ${Number(summary.recordsReviewed || 0).toLocaleString()} Amazon record${Number(summary.recordsReviewed || 0) === 1 ? '' : 's'}.`
+            : 'Margin did not receive usable Amazon records for this audit. Review the coverage details before relying on this result.',
       });
     }
 
@@ -2009,10 +2373,22 @@ class AuditRunService {
       row?.evidence?.claim_readiness === 'claim_ready' ||
       row?.evidence?.evidence_ready === true
     ).length;
+    const reviewOnlyCount = rows.filter((row: any) =>
+      row?.claim_readiness === 'review_only' ||
+      row?.evidence?.claim_readiness === 'review_only'
+    ).length;
     const metadata = getSyncMetadata(syncStatus);
-    const recordsReviewed = getRecordsReviewedFromMetadata(metadata);
+    const manualReport = auditSourceType === 'csv_upload'
+      ? buildManualReportProcessingSummary(await this.getCsvUploadRunForAudit(userId, tenantId, syncId))
+      : null;
+    const manualCoverage = manualReport
+      ? buildManualCoverageAssessment(manualReport)
+      : null;
+    const recordsReviewed = manualReport
+      ? (manualReport.rowsAccepted || manualReport.rowsParsed)
+      : getRecordsReviewedFromMetadata(metadata);
     const hasFindings = rows.length > 0;
-    const sourcesReviewed = [
+    const connectedSourcesReviewed = [
       numberFrom(metadata.ordersProcessed) || numberFrom(metadata.totalOrders) ? 'Orders' : null,
       numberFrom(metadata.inventoryCount) ? 'Inventory' : null,
       numberFrom(metadata.shipmentsCount) ? 'Shipments' : null,
@@ -2025,31 +2401,44 @@ class AuditRunService {
       : Array.isArray(metadata.warnings)
         ? metadata.warnings
         : [];
-    const sourcesUnavailable = sourceWarnings
+    const connectedSourcesUnavailable = sourceWarnings
       .map((warning: any) => String(warning?.source || warning?.name || warning || '').trim())
       .filter(Boolean);
-    const isPartial = sourcesUnavailable.length > 0 || recordsReviewed === 0;
+    const sourcesReviewed = manualReport ? manualReport.sourceFamilies : connectedSourcesReviewed;
+    const sourcesUnavailable = manualReport ? manualReport.sourceFamiliesNotRepresented : connectedSourcesUnavailable;
+    // A manual upload is always scoped to the supplied files and their represented periods.
+    // It must never inherit a complete/zero-coverage meaning from the connected-Amazon rail.
+    const isPartial = manualReport ? true : (sourcesUnavailable.length > 0 || recordsReviewed === 0);
     const finalStatus: AuditSummary['finalStatus'] = hasFindings
       ? (isPartial ? 'partial_with_findings' : 'complete_with_findings')
       : (isPartial ? 'partial_no_findings' : 'complete_no_findings');
-    const truth = classifyConnectedAuditTruth({
-      sourceType: auditSourceType || metadata.sourceType || metadata.source || syncStatus?.source_type,
-      syncStatus: syncStatus?.status,
-      recordsReviewed,
-      findingsCount: rows.length,
-      sourcesUnavailable,
-    });
-    const syntheticExecution = resolveTrustedSyntheticAuditExecutionContext(tenantId, syncId, {
+    const truth = manualReport
+      ? {
+          state: 'limited_coverage' as const,
+          message: manualReport.filesProcessed > 0
+            ? `Margin processed ${manualReport.filesProcessed} uploaded report${manualReport.filesProcessed === 1 ? '' : 's'} across ${manualReport.sourceFamilies.length} supported source ${manualReport.sourceFamilies.length === 1 ? 'family' : 'families'}. Coverage is limited to the reports and periods provided; no connected Amazon data was used for this audit.`
+            : 'Margin received uploaded reports, but durable row-processing details are unavailable. Coverage is limited to the reports and periods provided; no connected Amazon data was used for this audit.',
+          retryable: false,
+          hasUsableOperationalData: manualReport.rowsAccepted > 0 || manualReport.rowsParsed > 0,
+        }
+      : classifyConnectedAuditTruth({
+          sourceType: auditSourceType || metadata.sourceType || metadata.source || syncStatus?.source_type,
+          syncStatus: syncStatus?.status,
+          recordsReviewed,
+          findingsCount: rows.length,
+          sourcesUnavailable,
+        });
+    resolveTrustedSyntheticAuditExecutionContext(tenantId, syncId, {
       executionProvenance: metadata.executionProvenance,
       syntheticTraining: metadata.syntheticTraining,
     });
-    const syntheticTraining = Boolean(syntheticExecution);
 
     const summary: AuditSummary = {
       scopeValue,
       findingsCount: rows.length,
       categories,
       evidenceReadyCount,
+      reviewOnlyCount,
       locked: true,
       message: truth.message,
       finalStatus,
@@ -2057,10 +2446,12 @@ class AuditRunService {
       recordsReviewed,
       sourcesReviewed,
       sourcesUnavailable,
+      manualReport: manualReport || undefined,
+      manualCoverage: manualCoverage || undefined,
       retryable: truth.retryable
     };
 
-    return syntheticTraining ? withSyntheticTrainingSummary(summary) : summary;
+    return summary;
   }
 
   private async getFindingSummaries(userId: string, tenantId: string, syncId: string) {

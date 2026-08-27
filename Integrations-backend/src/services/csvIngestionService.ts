@@ -238,15 +238,9 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['settlement-id', 'total-amount'],
     ],
     inventory: [
-        ['sellerSku', 'asin'],
-        ['seller-sku', 'asin'],
-        ['sku', 'fnsku'],
-        ['SKU', 'ASIN'],
         ['sellerSku', 'availableQuantity'],
         ['seller-sku', 'available'],
-        ['sku', 'quantity'],
         ['FNSKU', 'ASIN', 'Event Type'],
-        ['FNSKU', 'ASIN', 'Disposition'],
         ['FNSKU', 'MSKU', 'Quantity'],
         ['Date', 'FNSKU', 'ASIN', 'MSKU'],
         ['fnsku', 'asin', 'event type'],
@@ -274,80 +268,110 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
     unknown: [],
 };
 
-const CSV_TYPE_PRIORITY: Record<CSVType, number> = {
-    transfers: 1,
-    financial_events: 2,
-    settlements: 3,
-    fees: 4,
-    shipments: 5,
-    returns: 6,
-    orders: 7,
-    inventory: 8,
-    unknown: 99,
-};
-
-const CSV_FILENAME_HINTS: Array<{ type: CSVType; patterns: RegExp[] }> = [
-    { type: 'financial_events', patterns: [/financial/i, /financial[_\- ]?events?/i, /\bfin[_\- ]?events?\b/i] },
-    { type: 'transfers', patterns: [/transfer/i, /inventory[_\- ]?transfers?/i] },
-    { type: 'settlements', patterns: [/settlement/i] },
-    { type: 'shipments', patterns: [/shipment/i] },
-    { type: 'returns', patterns: [/return/i] },
-    { type: 'orders', patterns: [/\border/i] },
-    { type: 'inventory', patterns: [/inventory/i, /ledger/i] },
-    { type: 'fees', patterns: [/\bfees?\b/i] },
-];
-
-function inferCsvTypeFromFileName(fileName: string): CSVType | null {
-    for (const hint of CSV_FILENAME_HINTS) {
-        if (hint.patterns.some((pattern) => pattern.test(fileName))) {
-            return hint.type;
-        }
-    }
-
-    return null;
-}
-
 /**
- * Detect CSV type from headers, with filename as a soft hint.
- * When multiple signatures match, prefer the most specific signature first,
- * then use a small type priority so broad inventory headers do not steal
- * financial/transfers files.
+ * Detect CSV type only when exactly one supported report family has a matching
+ * header signature. A filename is descriptive metadata, not evidence that can
+ * resolve a structurally ambiguous schema. Callers that have an authoritative
+ * report type may use the explicit typed upload route instead.
  */
 function detectCSVType(headers: string[], fileName: string = ''): CSVType {
     const headerSet = new Set(headers.map(h => h.toLowerCase().replace(/[_\- ]/g, '')));
-    const fileHint = inferCsvTypeFromFileName(fileName);
-    let bestMatch: { type: CSVType; signatureLength: number; priority: number; hinted: boolean } | null = null;
+    const matchedTypes = new Set<CSVType>();
 
     for (const [csvType, signatures] of Object.entries(CSV_TYPE_SIGNATURES)) {
         if (csvType === 'unknown') continue;
 
-        for (const signature of signatures) {
+        const hasMatchingSignature = signatures.some((signature) => {
             const normalizedSig = signature.map(s => s.toLowerCase().replace(/[_\- ]/g, ''));
-            const allMatch = normalizedSig.every(s => headerSet.has(s));
-
-            if (!allMatch) continue;
-
-            const candidate = {
-                type: csvType as CSVType,
-                signatureLength: normalizedSig.length,
-                priority: CSV_TYPE_PRIORITY[csvType as CSVType] || 50,
-                hinted: fileHint === csvType,
-            };
-
-            if (
-                !bestMatch ||
-                candidate.hinted && !bestMatch.hinted ||
-                candidate.hinted === bestMatch.hinted && candidate.signatureLength > bestMatch.signatureLength ||
-                candidate.hinted === bestMatch.hinted &&
-                candidate.signatureLength === bestMatch.signatureLength &&
-                candidate.priority < bestMatch.priority
-            ) {
-                bestMatch = candidate;
-            }
+            return normalizedSig.every(s => headerSet.has(s));
+        });
+        if (hasMatchingSignature) {
+            matchedTypes.add(csvType as CSVType);
         }
     }
 
-    return bestMatch?.type || 'unknown';
+    if (matchedTypes.size > 1) {
+        const fileContext = fileName ? ` for ${fileName}` : '';
+        throw new Error(`Ambiguous CSV type${fileContext}: headers match multiple supported report families (${Array.from(matchedTypes).join(', ')}). Specify the report type explicitly.`);
+    }
+
+    return matchedTypes.values().next().value || 'unknown';
+}
+
+function assertSyntheticTrainingFilesContainNoTransferInput(
+    files: { buffer: Buffer; originalname: string; mimetype: string }[],
+    explicitType?: CSVType
+): void {
+    if (explicitType === 'transfers') {
+        throw new Error('Transfer-like input is prohibited for synthetic training execution.');
+    }
+
+    for (const file of files) {
+        if (/transfer/i.test(file.originalname)) {
+            throw new Error(`Transfer-like input is prohibited for synthetic training execution: ${file.originalname}`);
+        }
+
+        const records = parseManualAuditDelimitedRecords(file.buffer.toString('utf-8'));
+        if (records.length === 0) continue;
+
+        const detectedType = detectCSVType(Object.keys(records[0]), file.originalname);
+        if (detectedType === 'transfers') {
+            throw new Error(`Transfer-like input is prohibited for synthetic training execution: ${file.originalname}`);
+        }
+    }
+}
+
+type OrdinaryTransferInputInspection = {
+    csvType: CSVType;
+    records: Record<string, string | null>[];
+    prohibitedInventoryRowCount: number;
+};
+
+/**
+ * Ordinary manual uploads remain fail-closed while Transfer is OFF. The guard
+ * relies only on an explicit type, a detected report structure, or an exact
+ * inventory event semantic. A filename or reference-id string alone is not
+ * Transfer evidence and is intentionally not considered here.
+ */
+function inspectOrdinaryManualTransferInput(
+    file: { buffer: Buffer; originalname: string; mimetype: string },
+    explicitType?: CSVType,
+): OrdinaryTransferInputInspection | null {
+    let records: Record<string, string | null>[];
+    try {
+        records = parseManualAuditDelimitedRecords(file.buffer.toString('utf-8'));
+    } catch {
+        // Preserve the established parser's malformed-input result.
+        return null;
+    }
+
+    if (explicitType === 'transfers') {
+        return { csvType: 'transfers', records, prohibitedInventoryRowCount: 0 };
+    }
+    if (records.length === 0) return null;
+
+    let csvType: CSVType;
+    try {
+        csvType = explicitType || detectCSVType(Object.keys(records[0]), file.originalname);
+    } catch {
+        // Preserve the established parser's ambiguous-structure result.
+        return null;
+    }
+
+    if (csvType === 'transfers') {
+        return { csvType, records, prohibitedInventoryRowCount: 0 };
+    }
+    if (csvType !== 'inventory') return null;
+
+    const prohibitedInventoryRowCount = records.filter((record) => {
+        const eventType = getField(record, 'Event Type', 'event_type', 'EventType', 'type');
+        const normalized = String(eventType || '').trim().toLowerCase();
+        return normalized === 'transfer' || normalized === 'transfers';
+    }).length;
+
+    return prohibitedInventoryRowCount > 0
+        ? { csvType, records, prohibitedInventoryRowCount }
+        : null;
 }
 
 function assertSyntheticTrainingFilesContainNoTransferInput(
@@ -381,15 +405,27 @@ function assertSyntheticTrainingFilesContainNoTransferInput(
  * Robustly parse a numeric amount from CSV data.
  * Strips currency symbols ($, €, £), commas, whitespace, and handles negatives like ($145.00)
  */
-function parseAmount(raw: any): number {
-    if (raw === null || raw === undefined || raw === '') return 0;
-    if (typeof raw === 'number') return raw;
-    // Strip everything except digits, dots, minuses
-    const cleaned = String(raw).replace(/[^0-9.\-]/g, '');
+/**
+ * Parse optional monetary evidence without converting a blank or malformed cell
+ * into a literal zero. Explicit 0, currency symbols, and parenthesized negatives
+ * remain supported; absence is null and invalid supplied text rejects the row.
+ */
+function parseOptionalAmountField(raw: unknown, fieldName: string): number | null {
+    if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+        return null;
+    }
+    if (typeof raw === 'number') {
+        if (!Number.isFinite(raw)) throw new Error(`Invalid monetary field (${fieldName})`);
+        return raw;
+    }
+
+    const source = String(raw).trim();
+    const cleaned = source.replace(/[^0-9.\-]/g, '');
     const parsed = parseFloat(cleaned);
-    // If original had parentheses like ($145.00), treat as negative
-    if (String(raw).includes('(') && parsed > 0) return -parsed;
-    return isNaN(parsed) ? 0 : parsed;
+    if (!cleaned || !Number.isFinite(parsed)) {
+        throw new Error(`Invalid monetary field (${fieldName})`);
+    }
+    return source.includes('(') && parsed > 0 ? -parsed : parsed;
 }
 
 /**
@@ -428,21 +464,69 @@ function parseOptionalNumericField(raw: unknown, fieldName: string): number | nu
 }
 
 /**
+ * Snapshot counts and list prices permit an observed literal zero but not a
+ * negative value. Missing columns/cells remain null so database defaults and
+ * downstream consumers cannot confuse unavailable evidence with zero.
+ */
+function parseOptionalNonNegativeNumericField(raw: unknown, fieldName: string): number | null {
+    const parsed = parseOptionalNumericField(raw, fieldName);
+    if (parsed !== null && parsed < 0) {
+        throw new Error(`Invalid negative numeric field (${fieldName})`);
+    }
+    return parsed;
+}
+
+function parseRequiredNonNegativeNumericField(raw: unknown, fieldName: string): number {
+    const parsed = parseRequiredNumericField(raw, fieldName);
+    if (parsed < 0) {
+        throw new Error(`Invalid negative numeric field (${fieldName})`);
+    }
+    return parsed;
+}
+
+/**
  * Parse a required Manual Audit source date. A valid source date is normalized to
  * ISO time; missing or invalid provider text must not become generated current-time
  * chronology before Audit reconciliation and maturity rules consume it.
  */
-function parseRequiredIsoDateField(raw: unknown, fieldName: string): string {
+function parseOptionalIsoDateField(raw: unknown, fieldName: string): string | null {
     if (raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
-        throw new Error(`Missing required date field (${fieldName})`);
+        return null;
     }
 
-    const parsed = new Date(String(raw));
-    if (Number.isNaN(parsed.getTime())) {
+    const source = String(raw).trim();
+    const dateOnlyMatch = source.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const timestampMatch = source.match(/^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})$/);
+    const calendarMatch = dateOnlyMatch || timestampMatch;
+    if (!calendarMatch) {
+        throw new Error(`Invalid or ambiguous date field (${fieldName})`);
+    }
+
+    const year = Number(calendarMatch[1]);
+    const month = Number(calendarMatch[2]);
+    const day = Number(calendarMatch[3]);
+    const calendar = new Date(Date.UTC(year, month - 1, day));
+    if (
+        calendar.getUTCFullYear() !== year
+        || calendar.getUTCMonth() !== month - 1
+        || calendar.getUTCDate() !== day
+    ) {
         throw new Error(`Invalid date field (${fieldName})`);
     }
 
+    const parsed = new Date(source);
+    if (Number.isNaN(parsed.getTime())) {
+        throw new Error(`Invalid date field (${fieldName})`);
+    }
     return parsed.toISOString();
+}
+
+function parseRequiredIsoDateField(raw: unknown, fieldName: string): string {
+    const parsed = parseOptionalIsoDateField(raw, fieldName);
+    if (parsed === null) {
+        throw new Error(`Missing required date field (${fieldName})`);
+    }
+    return parsed;
 }
 
 /**
@@ -517,9 +601,115 @@ function getField(record: any, ...possibleNames: string[]): any {
     return null;
 }
 
+type CriticalAliasGroup = { field: string; aliases: string[] };
+
+const CRITICAL_ALIAS_GROUPS: Partial<Record<Exclude<CSVType, 'unknown'>, CriticalAliasGroup[]>> = {
+    orders: [
+        { field: 'order identifier', aliases: ['AmazonOrderId', 'amazon-order-id', 'order_id', 'orderId', 'Order ID'] },
+        { field: 'order date', aliases: ['PurchaseDate', 'purchase_date', 'purchaseDate', 'order_date', 'Order Date'] },
+        { field: 'order total', aliases: ['OrderTotal', 'total_amount', 'totalAmount', 'Amount', 'amount'] },
+    ],
+    shipments: [
+        { field: 'shipment identifier', aliases: ['ShipmentId', 'shipment_id', 'shipmentId', 'Shipment ID'] },
+        { field: 'shipment date', aliases: ['ShipmentDate', 'shipment_date', 'shipmentDate', 'Shipment Date', 'shipped_date', 'Date'] },
+    ],
+    returns: [
+        { field: 'return identifier', aliases: ['ReturnId', 'return_id', 'returnId', 'Return ID'] },
+        { field: 'return date', aliases: ['ReturnDate', 'return_date', 'returnDate', 'Return Date'] },
+        { field: 'return quantity', aliases: ['Quantity', 'quantity', 'ReturnQuantity', 'return_quantity'] },
+    ],
+    settlements: [
+        { field: 'settlement identifier', aliases: ['SettlementId', 'settlement_id', 'settlementId', 'Settlement ID'] },
+        { field: 'settlement date', aliases: ['PostedDate', 'posted_date', 'SettlementDate', 'settlement_date'] },
+        { field: 'transaction type', aliases: ['TransactionType', 'transaction_type', 'transactionType'] },
+        { field: 'settlement amount', aliases: ['Amount', 'amount', 'TotalAmount', 'total_amount', 'total-amount'] },
+    ],
+    financial_events: [
+        { field: 'financial event identifier', aliases: ['AdjustmentEventId', 'EventId', 'event_id', 'eventId'] },
+        { field: 'event type', aliases: ['EventType', 'event_type', 'eventType'] },
+        { field: 'posted date', aliases: ['PostedDate', 'posted_date', 'postedDate', 'EventDate', 'event_date'] },
+        { field: 'event amount', aliases: ['Amount', 'amount', 'EventAmount', 'event_amount'] },
+    ],
+    fees: [
+        { field: 'fee type', aliases: ['FeeType', 'fee_type', 'feeType'] },
+        { field: 'fee date', aliases: ['PostedDate', 'posted_date', 'postedDate', 'EventDate', 'event_date', 'date', 'Date'] },
+        { field: 'fee amount', aliases: ['FeeAmount', 'fee_amount', 'feeAmount', 'Amount', 'amount'] },
+    ],
+    inventory: [
+        { field: 'inventory SKU', aliases: ['sellerSku', 'seller-sku', 'seller_sku', 'SKU', 'sku', 'MSKU', 'msku'] },
+        { field: 'inventory quantity', aliases: ['availableQuantity', 'available', 'quantity_available', 'quantity', 'Quantity'] },
+        { field: 'inventory event date', aliases: ['Date', 'date', 'event_date', 'EventDate', 'PostedDate'] },
+    ],
+    transfers: [
+        { field: 'transfer identifier', aliases: ['transfer_id', 'TransferId'] },
+        { field: 'sent quantity', aliases: ['quantity_sent', 'QuantitySent'] },
+        { field: 'received quantity', aliases: ['quantity_received', 'QuantityReceived'] },
+    ],
+};
+
+function normalizeAliasValue(value: unknown): string | null {
+    if (value === null || value === undefined) return null;
+    const normalized = String(value).trim();
+    return normalized === '' ? null : normalized;
+}
+
+function findCriticalAliasConflict(records: Record<string, string | null>[], csvType: CSVType): { rowNumber: number; field: string } | null {
+    if (csvType === 'unknown') return null;
+    const groups = CRITICAL_ALIAS_GROUPS[csvType] || [];
+    if (groups.length === 0) return null;
+
+    for (let index = 0; index < records.length; index++) {
+        const record = records[index];
+        const byNormalizedHeader = new Map(Object.keys(record).map((header) => [normalizeManualAuditHeader(header), record[header]]));
+        for (const group of groups) {
+            const observedValues = new Set(
+                group.aliases
+                    .map((alias) => normalizeAliasValue(byNormalizedHeader.get(normalizeManualAuditHeader(alias))))
+                    .filter((value): value is string => value !== null)
+            );
+            if (observedValues.size > 1) {
+                return { rowNumber: index + 1, field: group.field };
+            }
+        }
+    }
+
+    return null;
+}
+
 // ============================================================================
 // Ingestion Result
 // ============================================================================
+
+export type CsvInputIssue = 'empty' | 'malformed' | 'ambiguous' | 'unsupported' | 'missing_required' | 'invalid_value' | 'prohibited';
+
+function classifyCsvInputIssue(errors: unknown): CsvInputIssue | undefined {
+    const message = Array.isArray(errors)
+        ? errors.map((value) => String(value || '')).join(' ')
+        : String(errors || '');
+
+    if (/ambiguous\s+(delimiter|csv type)|multiple supported report families/i.test(message)) return 'ambiguous';
+    if (/malformed|unterminated quoted field|duplicate normalized header|invalid header/i.test(message)) return 'malformed';
+    if (/empty or has no data rows/i.test(message)) return 'empty';
+    if (/could not detect csv type|unsupported csv type|temporarily disabled/i.test(message)) return 'unsupported';
+    if (/missing required headers|missing required fields|missing required numeric field/i.test(message)) return 'missing_required';
+    if (/invalid numeric field|invalid required|invalid date/i.test(message)) return 'invalid_value';
+    if (/transfer-like input is prohibited while transfer is off/i.test(message)) return 'prohibited';
+    return undefined;
+}
+
+export type CsvSubmissionDisposition = 'new' | 'mixed' | 'duplicate_reused';
+
+export type ManualTemporalCoverageStatus = 'available' | 'partial' | 'unavailable';
+
+export interface ManualFileTemporalEvidence {
+    status: ManualTemporalCoverageStatus;
+    sourceDateField: string | null;
+    earliestAt: string | null;
+    latestAt: string | null;
+    observedDateCount: number;
+    continuity: 'unknown';
+    reason?: string;
+}
 
 export interface IngestionResult {
     success: boolean;
@@ -530,7 +720,10 @@ export interface IngestionResult {
     rowsSkipped: number;
     rowsFailed: number;
     errors: string[];
+    inputIssue?: CsvInputIssue;
+    duplicateOfSyncId?: string;
     warnings?: string[];
+    temporalEvidence?: ManualFileTemporalEvidence;
     detectionTriggered: boolean;
     detectionJobId?: string;
 }
@@ -543,6 +736,8 @@ export interface BatchIngestionResult {
     detectionTriggered: boolean;
     detectionJobId?: string;
     syncId: string;
+    submissionDisposition?: CsvSubmissionDisposition;
+    reusedSyncId?: string;
 }
 
 export type CsvUploadRunStatus = 'started' | 'detection_processing' | 'completed' | 'partial' | 'failed';
@@ -557,9 +752,126 @@ export interface CsvUploadRunFileSummary {
     rowsSkipped?: number;
     rowsFailed?: number;
     errors?: string[];
+    inputIssue?: CsvInputIssue;
+    duplicateOfSyncId?: string;
     warnings?: string[];
+    temporalEvidence?: ManualFileTemporalEvidence;
     detectionTriggered?: boolean;
     detectionJobId?: string;
+}
+
+const TEMPORAL_SOURCE_FIELD_DEFINITIONS: Partial<Record<Exclude<CSVType, 'unknown'>, {
+    field: string;
+    aliases: string[];
+}>> = {
+    orders: { field: 'order_date', aliases: ['PurchaseDate', 'purchase_date', 'purchaseDate', 'order_date', 'Order Date'] },
+    shipments: { field: 'shipped_date', aliases: ['ShipmentDate', 'shipment_date', 'shipmentDate', 'shipped_date', 'Date'] },
+    returns: { field: 'returned_date', aliases: ['ReturnDate', 'return_date', 'returnDate', 'returned_date'] },
+    settlements: { field: 'settlement_date', aliases: ['PostedDate', 'settlement_date', 'posted_date', 'postedDate', 'SettlementDate'] },
+    financial_events: { field: 'event_date', aliases: ['PostedDate', 'event_date', 'postedDate', 'posted_date', 'date', 'Date'] },
+    fees: { field: 'event_date', aliases: ['PostedDate', 'event_date', 'postedDate', 'posted_date', 'date', 'Date'] },
+    inventory: { field: 'event_date', aliases: ['Date', 'date', 'event_date', 'EventDate', 'PostedDate'] },
+    transfers: { field: 'transfer_date', aliases: ['TransferDate', 'transfer_date', 'transferDate', 'date', 'Date'] },
+};
+
+function deriveManualFileTemporalEvidence(
+    records: Record<string, string | null>[],
+    csvType: CSVType,
+    result: Pick<IngestionResult, 'rowsInserted' | 'rowsSkipped' | 'errors'>,
+): ManualFileTemporalEvidence {
+    const definition = TEMPORAL_SOURCE_FIELD_DEFINITIONS[csvType as Exclude<CSVType, 'unknown'>];
+    if (!definition) {
+        return {
+            status: 'unavailable',
+            sourceDateField: null,
+            earliestAt: null,
+            latestAt: null,
+            observedDateCount: 0,
+            continuity: 'unknown',
+            reason: 'This report family has no supported source date field for temporal coverage.',
+        };
+    }
+
+    const observedDates: string[] = [];
+    let invalidDateCount = 0;
+    for (const record of records) {
+        try {
+            const parsed = parseOptionalIsoDateField(getField(record, ...definition.aliases), definition.field);
+            if (parsed) observedDates.push(parsed);
+        } catch {
+            invalidDateCount += 1;
+        }
+    }
+
+    const distinctDates = Array.from(new Set(observedDates)).sort();
+    if (result.rowsInserted <= 0 || distinctDates.length === 0) {
+        return {
+            status: 'unavailable',
+            sourceDateField: definition.field,
+            earliestAt: null,
+            latestAt: null,
+            observedDateCount: 0,
+            continuity: 'unknown',
+            reason: invalidDateCount > 0
+                ? 'One or more source dates could not be safely interpreted; this file did not establish temporal coverage.'
+                : 'No accepted source date was available to establish temporal coverage for this file.',
+        };
+    }
+
+    return {
+        status: invalidDateCount > 0 || result.rowsSkipped > 0 ? 'partial' : 'available',
+        sourceDateField: definition.field,
+        earliestAt: distinctDates[0],
+        latestAt: distinctDates[distinctDates.length - 1],
+        observedDateCount: distinctDates.length,
+        continuity: 'unknown',
+        reason: invalidDateCount > 0 || result.rowsSkipped > 0
+            ? 'Only accepted dated rows are represented; skipped or invalid rows do not establish temporal coverage.'
+            : 'Source dates are represented by accepted rows. Continuous day-by-day coverage is not inferred from event dates alone.',
+    };
+}
+
+function normalizeManualFileTemporalEvidence(value: unknown): ManualFileTemporalEvidence | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const entry = value as Record<string, unknown>;
+    const status = entry.status;
+    if (status !== 'available' && status !== 'partial' && status !== 'unavailable') return undefined;
+
+    const sourceDateField = typeof entry.sourceDateField === 'string' ? entry.sourceDateField : null;
+    const normalizeStoredDate = (raw: unknown): string | null => {
+        if (raw === null || raw === undefined) return null;
+        try {
+            return parseRequiredIsoDateField(raw, 'stored temporal evidence');
+        } catch {
+            return null;
+        }
+    };
+    const earliestAt = normalizeStoredDate(entry.earliestAt);
+    const latestAt = normalizeStoredDate(entry.latestAt);
+    const observedDateCount = Number(entry.observedDateCount);
+    const validCount = Number.isInteger(observedDateCount) && observedDateCount >= 0 ? observedDateCount : 0;
+
+    if (status !== 'unavailable' && (!earliestAt || !latestAt || validCount <= 0)) {
+        return {
+            status: 'unavailable',
+            sourceDateField,
+            earliestAt: null,
+            latestAt: null,
+            observedDateCount: 0,
+            continuity: 'unknown',
+            reason: 'Stored temporal facts were incomplete or invalid and do not establish coverage.',
+        };
+    }
+
+    return {
+        status,
+        sourceDateField,
+        earliestAt: status === 'unavailable' ? null : earliestAt,
+        latestAt: status === 'unavailable' ? null : latestAt,
+        observedDateCount: status === 'unavailable' ? 0 : validCount,
+        continuity: 'unknown',
+        reason: typeof entry.reason === 'string' ? entry.reason : undefined,
+    };
 }
 
 export interface CsvUploadDetectionSnapshot {
@@ -590,7 +902,7 @@ export interface CsvUploadRunSnapshot {
     detection: CsvUploadDetectionSnapshot | null;
 }
 
-const DISABLED_TYPES = new Set<CSVType>([]);
+const DISABLED_TYPES = new Set<CSVType>(['transfers']);
 
 type DetectionQueueStatus = 'pending' | 'processing' | 'completed' | 'failed';
 type CsvUploadRunSource = CsvUploadRunSnapshot['source'];
@@ -763,25 +1075,69 @@ export class CSVIngestionService {
         if (syntheticExecution) {
             validateSyntheticAuditExecutionContext(tenantId, syntheticExecution);
         }
-        const syncId = syntheticExecution
-            ? `${SYNTHETIC_TRAINING_SYNC_PREFIX}${Date.now()}`
-            : `csv_${Date.now()}`;
-        const results: IngestionResult[] = [];
+
+        const receivedFiles = files;
+        const rejectedTransferResults: IngestionResult[] = [];
+        if (!syntheticExecution) {
+            files = files.filter((file) => {
+                const inspection = inspectOrdinaryManualTransferInput(file, options.explicitType);
+                const entireStructuredTransferFile = inspection?.csvType === 'transfers';
+                const entireTransferLedgerFile = inspection?.csvType === 'inventory'
+                    && inspection.prohibitedInventoryRowCount === inspection.records.length;
+                if (!entireStructuredTransferFile && !entireTransferLedgerFile) return true;
+
+                const rowsProcessed = inspection?.records.length || 0;
+                rejectedTransferResults.push({
+                    success: false,
+                    csvType: inspection?.csvType || options.explicitType || 'unknown',
+                    fileName: file.originalname,
+                    rowsProcessed,
+                    rowsInserted: 0,
+                    rowsSkipped: rowsProcessed,
+                    rowsFailed: rowsProcessed,
+                    errors: ['Transfer-like input is prohibited while Transfer is OFF. This file was not persisted or sent to detection.'],
+                    inputIssue: 'prohibited',
+                    detectionTriggered: false,
+                });
+                return false;
+            });
+        }
+
         const triggerDetection = options.triggerDetection !== false;
+        if (files.length === 0 && rejectedTransferResults.length > 0) {
+            return {
+                success: false,
+                userId,
+                totalFiles: receivedFiles.length,
+                results: rejectedTransferResults,
+                detectionTriggered: false,
+                syncId: `csv_rejected_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`,
+                submissionDisposition: 'new',
+            };
+        }
+
+        // A timestamp alone can collide for simultaneous multipart submissions. Keep
+        // the established CSV prefixes while adding entropy so each request gets a
+        // separate lifecycle record; content identity remains the duplicate authority.
+        const runEntropy = crypto.randomBytes(6).toString('hex');
+        const syncId = syntheticExecution
+            ? `${SYNTHETIC_TRAINING_SYNC_PREFIX}${Date.now()}_${runEntropy}`
+            : `csv_${Date.now()}_${runEntropy}`;
+        const results: IngestionResult[] = [...rejectedTransferResults];
         const runStartedAt = new Date().toISOString();
         const isSandbox = Boolean(syntheticExecution) || this.getCsvUploadSandboxFlag();
 
         logger.info('📂 [CSV INGESTION] Starting batch ingestion', {
             userId,
             syncId,
-            fileCount: files.length,
-            fileNames: files.map(f => f.originalname),
+            fileCount: receivedFiles.length,
+            fileNames: receivedFiles.map(f => f.originalname),
             explicitType: options.explicitType || 'auto-detect',
         });
 
         try {
             await this.persistCsvUploadRunRecord(tenantId, userId, syncId, {
-                fileCount: files.length,
+                fileCount: receivedFiles.length,
                 filesSummary: this.buildAcceptedCsvRunFilesSummary(files),
                 startedAt: runStartedAt,
                 status: 'started',
@@ -805,6 +1161,7 @@ export class CSVIngestionService {
                     explicitType: options.explicitType,
                     storeId: options.storeId,
                     tenantId,
+                    rejectTransferLikeInventoryRows: !syntheticExecution,
                 });
                 results.push(result);
             } catch (error: any) {
@@ -817,6 +1174,7 @@ export class CSVIngestionService {
                     rowsSkipped: 0,
                     rowsFailed: 0,
                     errors: [error.message],
+                    inputIssue: classifyCsvInputIssue(error.message),
                     detectionTriggered: false,
                 });
             }
@@ -832,7 +1190,7 @@ export class CSVIngestionService {
             try {
                 await this.persistCsvUploadRunRecord(tenantId, userId, syncId, {
                     success: allSucceeded,
-                    fileCount: files.length,
+                    fileCount: receivedFiles.length,
                     filesSummary: this.buildCsvRunFilesSummary(results),
                     startedAt: runStartedAt,
                     status: 'detection_processing',
@@ -906,20 +1264,33 @@ export class CSVIngestionService {
             batchError,
         });
 
+        const duplicateFileCount = unifiedResults.filter((result) =>
+            result.success
+            && result.rowsInserted === 0
+            && result.rowsSkipped > 0
+            && (result.errors || []).some((message) => /duplicate file upload detected/i.test(String(message)))
+        ).length;
+        const submissionDisposition: CsvSubmissionDisposition = duplicateFileCount === unifiedResults.length && unifiedResults.length > 0
+            ? 'duplicate_reused'
+            : duplicateFileCount > 0
+                ? 'mixed'
+                : 'new';
+
         const batchResult: BatchIngestionResult = {
             success: allSucceeded && anySuccess && (!detectionAttempted || detectionSnapshot?.status === 'completed'),
             userId,
-            totalFiles: files.length,
+            totalFiles: receivedFiles.length,
             results: unifiedResults,
             detectionTriggered: detectionAttempted,
             detectionJobId,
             syncId,
+            submissionDisposition,
         };
 
         try {
             await this.persistCsvUploadRunRecord(tenantId, userId, syncId, {
                 success: batchResult.success,
-                fileCount: files.length,
+                fileCount: receivedFiles.length,
                 filesSummary: this.buildCsvRunFilesSummary(unifiedResults),
                 startedAt: runStartedAt,
                 completedAt: this.isTerminalCsvUploadRunStatus(runStatus) ? new Date().toISOString() : null,
@@ -941,7 +1312,7 @@ export class CSVIngestionService {
         logger.info('📂 [CSV INGESTION] Batch ingestion complete', {
             userId,
             syncId,
-            totalFiles: files.length,
+            totalFiles: receivedFiles.length,
             successCount: results.filter(r => r.success).length,
             totalRowsInserted: results.reduce((sum, r) => sum + r.rowsInserted, 0),
             detectionTriggered,
@@ -1063,7 +1434,10 @@ export class CSVIngestionService {
             rowsSkipped: result.rowsSkipped,
             rowsFailed: result.rowsFailed,
             errors: result.errors || [],
+            inputIssue: result.inputIssue || classifyCsvInputIssue(result.errors),
+            duplicateOfSyncId: result.duplicateOfSyncId,
             warnings: result.warnings || [],
+            temporalEvidence: result.temporalEvidence,
             detectionTriggered: result.detectionTriggered,
             detectionJobId: result.detectionJobId,
         }));
@@ -1107,7 +1481,12 @@ export class CSVIngestionService {
                 rowsSkipped,
                 rowsFailed,
                 errors: Array.isArray(entry.errors) ? entry.errors.map((value: unknown) => String(value)) : [],
+                inputIssue: ['empty', 'malformed', 'ambiguous', 'unsupported', 'missing_required', 'invalid_value', 'prohibited'].includes(String(entry.inputIssue))
+                    ? entry.inputIssue as CsvInputIssue
+                    : classifyCsvInputIssue(entry.errors),
+                duplicateOfSyncId: typeof entry.duplicateOfSyncId === 'string' ? entry.duplicateOfSyncId : undefined,
                 warnings: Array.isArray(entry.warnings) ? entry.warnings.map((value: unknown) => String(value)) : [],
+                temporalEvidence: normalizeManualFileTemporalEvidence(entry.temporalEvidence),
                 detectionTriggered: !!entry.detectionTriggered,
                 detectionJobId: typeof entry.detectionJobId === 'string' ? entry.detectionJobId : undefined,
             };
@@ -1128,6 +1507,9 @@ export class CSVIngestionService {
             rowsSkipped: Number(entry.rowsSkipped || 0),
             rowsFailed: Number(entry.rowsFailed || 0),
             errors: entry.errors || [],
+            inputIssue: entry.inputIssue || classifyCsvInputIssue(entry.errors),
+            duplicateOfSyncId: entry.duplicateOfSyncId,
+            temporalEvidence: entry.temporalEvidence,
             detectionTriggered: !!entry.detectionTriggered,
             detectionJobId: entry.detectionJobId,
         }));
@@ -1613,7 +1995,7 @@ export class CSVIngestionService {
 
         const { data, error } = await supabaseAdmin
             .from('csv_ingestion_runs')
-            .select('id, created_at')
+            .select('id, file_name, created_at')
             .eq('tenant_id', tenantId)
             .eq('user_id', userId)
             .eq('csv_type', csvType)
@@ -1639,7 +2021,7 @@ export class CSVIngestionService {
                 tenantId,
                 userId,
                 csvType,
-                fileName,
+                String((data as CsvIngestionRunRow).file_name || fileName),
                 data as CsvIngestionRunRow
             );
 
@@ -1819,7 +2201,7 @@ export class CSVIngestionService {
         userId: string,
         file: { buffer: Buffer; originalname: string; mimetype: string },
         syncId: string,
-        options: { explicitType?: CSVType; storeId?: string; tenantId?: string }
+        options: { explicitType?: CSVType; storeId?: string; tenantId?: string; rejectTransferLikeInventoryRows?: boolean }
     ): Promise<IngestionResult> {
         if (!options.tenantId) {
             throw new Error('tenantId is required for CSV ingestion');
@@ -1838,6 +2220,7 @@ export class CSVIngestionService {
                 rowsSkipped: 0,
                 rowsFailed: 0,
                 errors: ['CSV file is empty or has no data rows'],
+                inputIssue: 'empty',
                 detectionTriggered: false,
             };
         }
@@ -1856,10 +2239,11 @@ export class CSVIngestionService {
                 rowsSkipped: 0,
                 rowsFailed: 0,
                 errors: [
-                    `Could not detect CSV type from headers: [${headers.slice(0, 10).join(', ')}${headers.length > 10 ? '...' : ''}]. ` +
-                    `Supported types: orders, shipments, returns, settlements, inventory, financial_events, fees, transfers. ` +
-                    `Try specifying the type explicitly via /api/csv-upload/ingest/:type`
+                    `Unsupported report structure: Margin could not identify a supported report family from the supplied headers. ` +
+                    `Supported types: orders, shipments, returns, settlements, inventory, financial events, and fees. ` +
+                    `Use the explicit report-type upload only when the source report family is known.`
                 ],
+                inputIssue: 'unsupported',
                 detectionTriggered: false,
             };
         }
@@ -1873,7 +2257,8 @@ export class CSVIngestionService {
                 rowsInserted: 0,
                 rowsSkipped: records.length,
                 rowsFailed: records.length,
-                errors: [`CSV type "${csvType}" is temporarily disabled.`],
+                errors: [`Unsupported report structure: ${csvType} is not available for this upload.`],
+                inputIssue: 'unsupported',
                 detectionTriggered: false,
             };
         }
@@ -1889,6 +2274,49 @@ export class CSVIngestionService {
                 rowsSkipped: records.length,
                 rowsFailed: records.length,
                 errors: [`Missing required headers for ${csvType}: ${headerValidation.missing.join(', ')}`],
+                inputIssue: 'missing_required',
+                detectionTriggered: false,
+            };
+        }
+
+        const aliasConflict = findCriticalAliasConflict(records, csvType);
+        if (aliasConflict) {
+            return {
+                success: false,
+                csvType,
+                fileName: file.originalname,
+                rowsProcessed: records.length,
+                rowsInserted: 0,
+                rowsSkipped: records.length,
+                rowsFailed: records.length,
+                errors: [`Ambiguous critical evidence at row ${aliasConflict.rowNumber}: conflicting aliases for ${aliasConflict.field}. Margin did not choose a value.`],
+                inputIssue: 'ambiguous',
+                detectionTriggered: false,
+            };
+        }
+
+        const prohibitedInventoryRecords = options.rejectTransferLikeInventoryRows && csvType === 'inventory'
+            ? records.filter((record) => {
+                const eventType = getField(record, 'Event Type', 'event_type', 'EventType', 'type');
+                const normalized = String(eventType || '').trim().toLowerCase();
+                return normalized === 'transfer' || normalized === 'transfers';
+            })
+            : [];
+        const admissibleRecords = prohibitedInventoryRecords.length > 0
+            ? records.filter((record) => !prohibitedInventoryRecords.includes(record))
+            : records;
+
+        if (prohibitedInventoryRecords.length === records.length) {
+            return {
+                success: false,
+                csvType,
+                fileName: file.originalname,
+                rowsProcessed: records.length,
+                rowsInserted: 0,
+                rowsSkipped: records.length,
+                rowsFailed: records.length,
+                errors: ['Transfer-like inventory ledger input is prohibited while Transfer is OFF. No canonical Transfer evidence was persisted or sent to detection.'],
+                inputIssue: 'prohibited',
                 detectionTriggered: false,
             };
         }
@@ -1917,11 +2345,27 @@ export class CSVIngestionService {
         });
 
         // Route to appropriate ingestion handler
-        const result = await this.ingestByType(userId, options.tenantId, csvType, records, syncId, options.storeId);
+        const result = await this.ingestByType(userId, options.tenantId, csvType, admissibleRecords, syncId, options.storeId);
+        const rejectedTransferRowCount = prohibitedInventoryRecords.length;
+        const errors = rejectedTransferRowCount > 0
+            ? [
+                ...(result.errors || []),
+                `Rejected ${rejectedTransferRowCount} Transfer-labelled inventory ledger row(s): Transfer is OFF and the rows were not persisted or sent to detection.`,
+            ]
+            : result.errors;
+        const normalizedResult: Omit<IngestionResult, 'fileName'> = {
+            ...result,
+            rowsProcessed: records.length,
+            rowsSkipped: result.rowsSkipped + rejectedTransferRowCount,
+            rowsFailed: result.rowsFailed + rejectedTransferRowCount,
+            errors,
+            inputIssue: rejectedTransferRowCount > 0 ? 'prohibited' : result.inputIssue || classifyCsvInputIssue(errors),
+        };
 
         return {
-            ...result,
+            ...normalizedResult,
             fileName: file.originalname,
+            temporalEvidence: deriveManualFileTemporalEvidence(admissibleRecords, csvType, normalizedResult),
         };
     }
 
@@ -1999,7 +2443,7 @@ export class CSVIngestionService {
                     order_id: orderId,
                     seller_id: getField(r, 'SellerId', 'seller_id', 'sellerId') || userId,
                     marketplace_id: getField(r, 'MarketplaceId', 'marketplace_id', 'marketplaceId') || 'ATVPDKIKX0DER',
-                    order_date: orderDate,
+                    order_date: parseRequiredIsoDateField(orderDate, 'order_date'),
                     order_status: getField(r, 'OrderStatus', 'order_status', 'orderStatus', 'Status') || 'Shipped',
                     fulfillment_channel: getField(r, 'FulfillmentChannel', 'fulfillment_channel', 'fulfillmentChannel') || 'FBA',
                     total_amount: parseRequiredNumericField(
@@ -2115,8 +2559,11 @@ export class CSVIngestionService {
                     store_id: storeId || null,
                     shipment_id: shipmentId,
                     order_id: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
-                    shipped_date: shippedDate,
-                    received_date: getField(r, 'ReceivedDate', 'received_date', 'receivedDate') || null,
+                    shipped_date: parseRequiredIsoDateField(shippedDate, 'shipped_date'),
+                    received_date: parseOptionalIsoDateField(
+                        getField(r, 'ReceivedDate', 'received_date', 'receivedDate'),
+                        'received_date',
+                    ),
                     status: getField(r, 'ShipmentStatus', 'status', 'Status') || 'RECEIVED',
                     carrier: getField(r, 'Carrier', 'carrier') || null,
                     tracking_number: getField(r, 'TrackingNumber', 'tracking_number', 'trackingNumber') || null,
@@ -2126,9 +2573,9 @@ export class CSVIngestionService {
                         asin: getField(r, 'asin', 'ASIN') || null,
                         fnsku: getField(r, 'fnsku', 'FNSKU', 'fnSku', 'fn_sku') || null,
                     }],
-                    shipped_quantity: parseOptionalNumericField(getField(r, 'QuantityShipped', 'shipped_quantity', 'quantityShipped', 'Units Shipped'), 'shipped_quantity'),
-                    received_quantity: parseOptionalNumericField(getField(r, 'QuantityReceived', 'received_quantity', 'quantityReceived', 'Units Received'), 'received_quantity'),
-                    missing_quantity: parseOptionalNumericField(getField(r, 'QuantityMissing', 'missing_quantity', 'quantityMissing'), 'missing_quantity'),
+                    shipped_quantity: parseOptionalNonNegativeNumericField(getField(r, 'QuantityShipped', 'shipped_quantity', 'quantityShipped', 'Units Shipped'), 'shipped_quantity'),
+                    received_quantity: parseOptionalNonNegativeNumericField(getField(r, 'QuantityReceived', 'received_quantity', 'quantityReceived', 'Units Received'), 'received_quantity'),
+                    missing_quantity: parseOptionalNonNegativeNumericField(getField(r, 'QuantityMissing', 'missing_quantity', 'quantityMissing'), 'missing_quantity'),
                     metadata: {
                         sku: getField(r, 'sku', 'SKU', 'sellerSku', 'seller_sku') || null,
                         asin: getField(r, 'asin', 'ASIN') || null,
@@ -2175,15 +2622,18 @@ export class CSVIngestionService {
                     return_id: returnId,
                     order_id: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
                     reason: getField(r, 'ReturnReason', 'reason', 'Reason', 'return_reason') || 'CUSTOMER_REQUEST',
-                    returned_date: returnDate,
+                    returned_date: parseRequiredIsoDateField(returnDate, 'returned_date'),
                     status: getField(r, 'ReturnStatus', 'status', 'Status') || 'RECEIVED',
-                    refund_amount: parseAmount(getField(r, 'RefundAmount', 'refund_amount', 'refundAmount', 'Amount')),
+                    refund_amount: parseOptionalAmountField(
+                        getField(r, 'RefundAmount', 'refund_amount', 'refundAmount', 'Amount'),
+                        'refund_amount',
+                    ),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
                     items: [{
                         sku: getField(r, 'sku', 'SKU', 'sellerSku', 'seller_sku') || null,
                         asin: getField(r, 'asin', 'ASIN') || null,
                         fnsku: getField(r, 'FNSKU', 'fnsku', 'FulfillmentNetworkSKU', 'fulfillmentNetworkSku') || null,
-                        quantity: parseRequiredNumericField(getField(r, 'quantity', 'Quantity'), 'quantity'),
+                        quantity: parseRequiredNonNegativeNumericField(getField(r, 'quantity', 'Quantity'), 'quantity'),
                     }],
                     is_partial: false,
                     metadata: {
@@ -2233,7 +2683,7 @@ export class CSVIngestionService {
                     fnsku: getField(r, 'FNSKU', 'fnsku', 'FulfillmentNetworkSKU', 'fulfillmentNetworkSku') || null,
                     sku: getField(r, 'SellerSKU', 'seller_sku', 'sku', 'SKU') || null,
                     asin: getField(r, 'ASIN', 'asin') || null,
-                    quantity: parseOptionalNumericField(
+                    quantity: parseOptionalNonNegativeNumericField(
                         getField(r, 'Quantity', 'quantity', 'QuantityReimbursed', 'quantity_reimbursed'),
                         'quantity'
                     ),
@@ -2250,9 +2700,9 @@ export class CSVIngestionService {
                     order_id: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
                     transaction_type: transactionType,
                     amount,
-                    fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees')),
+                    fees: parseOptionalAmountField(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees'), 'fees'),
                     currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
-                    settlement_date: settlementDate,
+                    settlement_date: parseRequiredIsoDateField(settlementDate, 'settlement_date'),
                     fee_breakdown: {},
                     metadata: reimbursementEvidence,
                     sync_id: syncId,
@@ -2275,7 +2725,7 @@ export class CSVIngestionService {
                         eventSubtype: classification.eventSubtype || transactionType,
                         amount,
                         currency: getField(r, 'CurrencyCode', 'currency', 'Currency') || 'USD',
-                        eventDate: settlementDate,
+                        eventDate: parseRequiredIsoDateField(settlementDate, 'settlement_date'),
                         referenceId: settlementId,
                         referenceType: classification.referenceType || 'settlement',
                         settlementId,
@@ -2289,7 +2739,7 @@ export class CSVIngestionService {
                         rawPayload: r,
                         metadata: {
                             csvType: 'settlements',
-                            fees: parseAmount(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees')),
+                            fees: parseOptionalAmountField(getField(r, 'Fees', 'fees', 'TotalFees', 'total_fees'), 'fees'),
                             ...reimbursementEvidence,
                         },
                         isPayoutEvent: classification.isPayoutEvent && amount > 0
@@ -2360,13 +2810,31 @@ export class CSVIngestionService {
                     fnsku: getField(r, 'fnSku', 'fnsku', 'FNSKU', 'fn_sku') || null,
                     product_name: getField(r, 'productName', 'product_name', 'title', 'Title', 'ProductName') || null,
                     condition_type: getField(r, 'condition', 'Condition', 'condition_type') || 'New',
-                    quantity_available: Number(getField(r, 'availableQuantity', 'available', 'quantity_available', 'quantity', 'Quantity')) || 0,
-                    quantity_reserved: Number(getField(r, 'reservedQuantity', 'reserved', 'quantity_reserved')) || 0,
-                    quantity_inbound: Number(getField(r, 'inboundQuantity', 'inbound', 'quantity_inbound')) || 0,
-                    price: Number(getField(r, 'price', 'Price', 'yourPrice', 'your_price')) || 0,
+                    quantity_available: parseOptionalNonNegativeNumericField(
+                        getField(r, 'availableQuantity', 'available', 'quantity_available', 'quantity', 'Quantity'),
+                        'quantity_available',
+                    ),
+                    quantity_reserved: parseOptionalNonNegativeNumericField(
+                        getField(r, 'reservedQuantity', 'reserved', 'quantity_reserved'),
+                        'quantity_reserved',
+                    ),
+                    quantity_inbound: parseOptionalNonNegativeNumericField(
+                        getField(r, 'inboundQuantity', 'inbound', 'quantity_inbound'),
+                        'quantity_inbound',
+                    ),
+                    price: parseOptionalNonNegativeNumericField(
+                        getField(r, 'price', 'Price', 'yourPrice', 'your_price'),
+                        'price',
+                    ),
                     dimensions: {
-                        damaged: Number(getField(r, 'damagedQuantity', 'damaged', 'quantity_damaged')) || 0,
-                        unfulfillable: Number(getField(r, 'unfulfillableQuantity', 'unfulfillable', 'quantity_unfulfillable')) || 0,
+                        damaged: parseOptionalNonNegativeNumericField(
+                            getField(r, 'damagedQuantity', 'damaged', 'quantity_damaged'),
+                            'quantity_damaged',
+                        ),
+                        unfulfillable: parseOptionalNonNegativeNumericField(
+                            getField(r, 'unfulfillableQuantity', 'unfulfillable', 'quantity_unfulfillable'),
+                            'quantity_unfulfillable',
+                        ),
                     },
                     sync_id: syncId,
                     sync_timestamp: new Date().toISOString(),
@@ -2460,7 +2928,10 @@ export class CSVIngestionService {
                     direction = rawQuantity >= 0 ? 'in' : 'out';
                 }
 
-                const eventDate = getField(r, 'Date', 'date', 'event_date', 'EventDate', 'PostedDate');
+                const eventDate = parseRequiredIsoDateField(
+                    getField(r, 'Date', 'date', 'event_date', 'EventDate', 'PostedDate'),
+                    'event_date',
+                );
 
                 ledgerRows.push({
                     id: uuidv4(),
@@ -2476,7 +2947,7 @@ export class CSVIngestionService {
                     quantity: Math.abs(rawQuantity),
                     quantity_direction: direction,
                     warehouse_balance: null, // Will be calculated per-FNSKU after all events
-                    event_date: eventDate ? new Date(eventDate).toISOString() : new Date().toISOString(),
+                    event_date: eventDate,
                     fulfillment_center: getField(r, 'Fulfillment Center', 'fulfillment_center', 'FulfillmentCenter', 'FC', 'warehouse') || null,
                     disposition: getField(r, 'Disposition', 'disposition') || null,
                     reason: getField(r, 'Reason', 'reason') || null,
@@ -2640,7 +3111,7 @@ export class CSVIngestionService {
                         },
                         isPayoutEvent: classification.isPayoutEvent && amountInfo.amount > 0
                     }),
-                    quantity: parseOptionalNumericField(
+                    quantity: parseOptionalNonNegativeNumericField(
                         getField(r, 'Quantity', 'quantity', 'Qty', 'qty', 'QuantityReimbursed', 'quantity_reimbursed'),
                         'quantity'
                     ),
@@ -2673,12 +3144,10 @@ export class CSVIngestionService {
             try {
                 const r = records[i];
                 const feeAmount = getField(r, 'FeeAmount', 'fee_amount', 'feeAmount', 'Amount', 'amount');
-                const eventDate = getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date');
-                if (!eventDate) {
-                    skipped++;
-                    errors.push(`Row ${i + 1}: Missing required field (event_date)`);
-                    continue;
-                }
+                const eventDate = parseRequiredIsoDateField(
+                    getField(r, 'PostedDate', 'event_date', 'postedDate', 'posted_date', 'date'),
+                    'event_date',
+                );
                 const amount = parseRequiredAmountField(feeAmount, 'fee_amount');
                 const sku = getField(r, 'SellerSKU', 'sku', 'SKU', 'seller_sku') || null;
                 rows.push({

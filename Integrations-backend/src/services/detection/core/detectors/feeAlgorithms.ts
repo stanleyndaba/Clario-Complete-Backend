@@ -5,6 +5,7 @@
  * Finds money lost to incorrectly calculated or overcharged fees.
  */
 
+import { createHash } from 'crypto';
 import { supabaseAdmin } from '../../../../database/supabaseClient';
 import logger from '../../../../utils/logger';
 import { relationExists, requireDetectionSourceType, resolveTenantId } from './shared/tenantUtils';
@@ -302,6 +303,15 @@ function getUnitIdentity(event: FeeEvent): string {
     if (event.order_id) return `ORD_${event.order_id}_${event.sku || 'nosku'}`;
     if (event.shipment_id) return `SHIP_${event.shipment_id}_${event.sku || 'nosku'}`;
     return `EVT_${event.id}`;
+}
+
+function hasConflictingObservedFnsku(events: FeeEvent[]): boolean {
+    const observed = new Set(
+        events
+            .map((event) => String(event.fnsku || '').trim().toUpperCase())
+            .filter(Boolean)
+    );
+    return observed.size > 1;
 }
 
 function getDuplicateIntentIdentity(event: FeeEvent): string {
@@ -1070,6 +1080,10 @@ export function detectDuplicateFees(sellerId: string, syncId: string, data: FeeS
 
         for (const [fp, group] of fingerprintMap) {
             if (group.length > 1) {
+                // A hard observed FNSKU contradiction is stronger than the
+                // same-order/SKU fallback and cannot establish duplicate billing.
+                // Missing FNSKU remains a weaker, non-fabricated match as before.
+                if (hasConflictingObservedFnsku(group)) continue;
                 let validGroup = group;
                 const isAdjustment = group.some(e => e.fee_type === 'Adjustment');
                 
@@ -1383,6 +1397,25 @@ export type FeeDetectionPersistenceResult = {
     error?: string;
 };
 
+function buildFeeFindingFingerprint(result: FeeDetectionResult): string {
+    const evidence = (result.evidence || {}) as Record<string, unknown>;
+    const canonicalIdentity = {
+        version: 's4_fee_finding_v1',
+        anomalyType: result.anomaly_type,
+        relatedEventIds: [...new Set((result.related_event_ids || []).map((id) => String(id)))].sort(),
+        feeType: String(evidence.fee_type || ''),
+        feeReference: String(evidence.reference_id || evidence.shipment_id || evidence.order_id || ''),
+        sku: String(evidence.sku || result.sku || ''),
+        asin: String(evidence.asin || result.asin || ''),
+        chargedAmount: Number(evidence.charged_amount ?? 0),
+        expectedAmount: Number(evidence.expected_amount ?? 0),
+        overchargeAmount: Number(evidence.overcharge_amount ?? result.estimated_value ?? 0),
+        currency: String(result.currency || ''),
+        reviewTier: String((evidence as any).review_tier || ''),
+    };
+    return createHash('sha256').update(JSON.stringify(canonicalIdentity)).digest('hex');
+}
+
 export async function runFeeOverchargeDetection(sellerId: string, syncId: string) {
     const lookback = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
     const [events, catalog] = await Promise.all([
@@ -1422,6 +1455,7 @@ export async function storeFeeDetectionResults(results: FeeDetectionResult[]): P
             product_name: r.evidence?.product_name ?? r.product_name,
         },
         related_event_ids: r.related_event_ids,
+        finding_fingerprint: buildFeeFindingFingerprint(r),
         discovery_date: r.discovery_date.toISOString(),
         deadline_date: r.deadline_date.toISOString(),
         days_remaining: r.days_remaining,
@@ -1434,7 +1468,10 @@ export async function storeFeeDetectionResults(results: FeeDetectionResult[]): P
 
     const { data, error } = await supabaseAdmin
         .from('detection_results')
-        .insert(records)
+        .upsert(records, {
+            onConflict: 'tenant_id,seller_id,sync_id,anomaly_type,finding_fingerprint',
+            ignoreDuplicates: false,
+        })
         .select('id, anomaly_type');
 
     if (error) {

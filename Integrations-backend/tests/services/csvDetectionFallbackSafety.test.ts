@@ -281,6 +281,166 @@ describe('CSV detection fallback safety', () => {
     expect(mockLegacyEnqueueDetectionJob).not.toHaveBeenCalled();
   });
 
+  it('S11-T1 rejects explicit and auto-detected ordinary structured Transfer reports before a CSV run, canonical persistence, queueing, or detection', async () => {
+    const transferCsv = [
+      'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date',
+      'TRANSFER-001,SKU-1,PHX6,MDW2,4,0,2026-03-18T00:00:00Z',
+    ].join('\n');
+
+    const typed = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(transferCsv), originalname: 'manual-transfer.csv', mimetype: 'text/csv' }],
+      { explicitType: 'transfers', triggerDetection: true, tenantId }
+    );
+    const detected = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(transferCsv), originalname: 'manual-report.csv', mimetype: 'text/csv' }],
+      { triggerDetection: true, tenantId }
+    );
+
+    for (const result of [typed, detected]) {
+      expect(result).toMatchObject({ success: false, totalFiles: 1, detectionTriggered: false });
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          success: false,
+          csvType: 'transfers',
+          inputIssue: 'prohibited',
+          rowsInserted: 0,
+          detectionTriggered: false,
+        }),
+      ]);
+    }
+    expect(tables.csv_upload_runs).toHaveLength(0);
+    expect(tables.csv_ingestion_runs).toHaveLength(0);
+    expect(tables.inventory_transfers || []).toHaveLength(0);
+    expect(tables.detection_queue).toHaveLength(0);
+    expect(mockTriggerDetectionPipeline).not.toHaveBeenCalled();
+    expect(mockLegacyEnqueueDetectionJob).not.toHaveBeenCalled();
+  });
+
+  it('S11-T2/T7 rejects Transfer and Transfers inventory-ledger rows before canonical ledger persistence, including a SKU-only identity', async () => {
+    const transferLedgerCsv = [
+      'Date,FNSKU,ASIN,MSKU,Event Type,Reference ID,Quantity',
+      '2025-01-01T00:00:00Z,FNSKU-TRANSFER,ASIN-1,SKU-1,Transfer,TRANSFER-LEDGER-1,-4',
+    ].join('\n');
+    const skuOnlyTransferLedgerCsv = [
+      'Date,SKU,Event Type,Reference ID,Quantity',
+      '2025-01-01T00:00:00Z,SKU-ONLY,Transfers,TRANSFER-LEDGER-2,4',
+    ].join('\n');
+
+    for (const [fileName, csv] of [
+      ['inventory-ledger-transfer.csv', transferLedgerCsv],
+      ['inventory-ledger-transfers-sku-only.csv', skuOnlyTransferLedgerCsv],
+    ] as const) {
+      const result = await service.ingestFiles(
+        userId,
+        [{ buffer: Buffer.from(csv), originalname: fileName, mimetype: 'text/csv' }],
+        { explicitType: 'inventory', triggerDetection: true, tenantId }
+      );
+      expect(result).toMatchObject({ success: false, totalFiles: 1, detectionTriggered: false });
+      expect(result.results).toEqual([
+        expect.objectContaining({
+          success: false,
+          csvType: 'inventory',
+          inputIssue: 'prohibited',
+          rowsInserted: 0,
+          detectionTriggered: false,
+        }),
+      ]);
+    }
+
+    expect(tables.csv_upload_runs).toHaveLength(0);
+    expect(tables.csv_ingestion_runs).toHaveLength(0);
+    expect(tables.inventory_ledger_events || []).toHaveLength(0);
+    expect(tables.detection_queue).toHaveLength(0);
+    expect(mockTriggerDetectionPipeline).not.toHaveBeenCalled();
+  });
+
+  it('S11-T4 preserves valid evidence in a mixed batch while returning explicit prohibited truth for the structured Transfer portion', async () => {
+    const transferCsv = [
+      'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date',
+      'TRANSFER-002,SKU-2,PHX6,MDW2,3,0,2026-03-18T00:00:00Z',
+    ].join('\n');
+
+    const result = await service.ingestFiles(
+      userId,
+      [
+        { buffer: Buffer.from(orderCsv), originalname: 'valid-orders.csv', mimetype: 'text/csv' },
+        { buffer: Buffer.from(transferCsv), originalname: 'transfer-evidence.csv', mimetype: 'text/csv' },
+      ],
+      { triggerDetection: false, tenantId }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.totalFiles).toBe(2);
+    expect(result.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileName: 'valid-orders.csv', success: true, csvType: 'orders', rowsInserted: 1 }),
+      expect.objectContaining({
+        fileName: 'transfer-evidence.csv',
+        success: false,
+        csvType: 'transfers',
+        inputIssue: 'prohibited',
+        rowsInserted: 0,
+      }),
+    ]));
+    expect(tables.orders).toHaveLength(1);
+    expect(tables.inventory_transfers || []).toHaveLength(0);
+    expect(tables.detection_queue).toHaveLength(0);
+    expect(mockTriggerDetectionPipeline).not.toHaveBeenCalled();
+  });
+
+  it('S11-T4-row preserves ordinary inventory rows while rejecting a Transfer-labelled row in the same valid ledger file', async () => {
+    const mixedLedgerCsv = [
+      'Date,FNSKU,ASIN,MSKU,Event Type,Reference ID,Quantity',
+      '2026-03-18T00:00:00Z,FNSKU-RECEIPT,ASIN-1,SKU-1,Receipt,RECEIPT-1,2',
+      '2026-03-19T00:00:00Z,FNSKU-TRANSFER,ASIN-1,SKU-1,Transfers,TRANSFER-ROW-1,-2',
+    ].join('\n');
+
+    const result = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(mixedLedgerCsv), originalname: 'mixed-inventory-ledger.csv', mimetype: 'text/csv' }],
+      { explicitType: 'inventory', triggerDetection: false, tenantId }
+    );
+
+    expect(result).toMatchObject({ success: true, totalFiles: 1, detectionTriggered: false });
+    expect(result.results[0]).toMatchObject({
+      success: true,
+      csvType: 'inventory',
+      inputIssue: 'prohibited',
+      rowsProcessed: 2,
+      rowsInserted: 2,
+      rowsSkipped: 1,
+      rowsFailed: 1,
+    });
+    expect(result.results[0].errors).toEqual(expect.arrayContaining([
+      expect.stringContaining('Rejected 1 Transfer-labelled inventory ledger row'),
+    ]));
+    expect(tables.inventory_ledger_events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_type: 'Receipt', reference_id: 'RECEIPT-1' }),
+    ]));
+    expect(tables.inventory_ledger_events.some((row) => row.reference_id === 'TRANSFER-ROW-1')).toBe(false);
+    expect(mockTriggerDetectionPipeline).not.toHaveBeenCalled();
+  });
+
+  it('S11 control keeps an Adjustment ledger event with a Transfer-looking reference and filename as ordinary non-Transfer evidence', async () => {
+    const adjustmentLedgerCsv = [
+      'Date,FNSKU,ASIN,MSKU,Event Type,Reference ID,Quantity',
+      '2026-03-18T00:00:00Z,FNSKU-ADJUSTMENT,ASIN-1,SKU-1,Adjustment,TRANSFER-123,2',
+    ].join('\n');
+
+    const result = await service.ingestFiles(
+      userId,
+      [{ buffer: Buffer.from(adjustmentLedgerCsv), originalname: 'transfer-named-adjustment.csv', mimetype: 'text/csv' }],
+      { explicitType: 'inventory', triggerDetection: false, tenantId }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.results[0]).toMatchObject({ success: true, csvType: 'inventory', inputIssue: undefined });
+    expect(tables.inventory_ledger_events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_type: 'Adjustment', reference_id: 'TRANSFER-123' }),
+    ]));
+  });
+
   it('fails honestly when enhanced detection reports findings but persists zero detection_results rows', async () => {
     mockTriggerDetectionPipeline.mockResolvedValue({
       success: true,

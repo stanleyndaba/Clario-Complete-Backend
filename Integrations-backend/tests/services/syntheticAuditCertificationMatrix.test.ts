@@ -85,7 +85,11 @@ describe('complete synthetic audit certification matrix', () => {
     });
 
     const s11 = manifest.scenarios.find((scenario: any) => scenario.id === 'S11');
-    expect(s11.expected_detector_state).toBe('transfer_detector_not_called');
+    expect(s11.expected_parser_state).toContain('ordinary_transfer_reports_rejected_pre_persistence');
+    expect(s11.expected_detector_state).toContain('transfer_auditor_and_transfer_derived_whale_path_receive_no_prohibited_input');
+    expect(s11.prohibited_conclusions).toEqual(expect.arrayContaining([
+      'prohibited_transfer_creates_run_canonical_row_queue_audit_detector_or_monetary_finding',
+    ]));
     expect(evidenceMap.excludes).toEqual(expect.arrayContaining([
       'legacy_transfer_positive_semantics_tests',
       'provider_calls',

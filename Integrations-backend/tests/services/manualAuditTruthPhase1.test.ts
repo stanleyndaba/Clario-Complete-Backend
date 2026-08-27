@@ -259,10 +259,6 @@ async function ingestCleanManualAudit(service: CSVIngestionService) {
       'FeeType,FeeAmount,PostedDate,CurrencyCode,EventId,Reference ID',
       'FBAFee,(15),2026-07-07T00:00:00Z,USD,CLEAN-FEE-1,CLEAN-FEE-REF-1',
     ].join('\n')),
-    file('truth-transfers.csv', [
-      'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value,currency',
-      'CLEAN-TRANSFER-1,CLEAN-SKU-1,PHX6,MDW2,10,10,2026-07-01T00:00:00Z,25,USD',
-    ].join('\n')),
   ], { tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
 }
 
@@ -289,7 +285,7 @@ describe('Manual Audit truth test phase 1', () => {
     expect(ingestion.syncId).toMatch(/^csv_/);
     expect(tables.orders).toHaveLength(1);
     expect(tables.inventory_ledger_events).toHaveLength(3);
-    expect(tables.inventory_transfers).toHaveLength(1);
+    expect(tables.inventory_transfers).toBeUndefined();
 
     const actual = await enhancedDetectionService.triggerDetectionPipeline(
       SELLER_A,
@@ -345,7 +341,7 @@ describe('Manual Audit truth test phase 1', () => {
     expect((tables.detection_results || []).filter((row) => row.anomaly_type === 'refund_no_return')).toEqual([]);
   });
 
-  it('CLEAN-TRANSFERS: equal Manual transfer sent and received quantities produce no Transfer Auditor value', async () => {
+  it('S11-CLEAN-TRANSFERS: a reconciled Manual Transfer report is prohibited before persistence or Transfer Auditor admission', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('clean-transfers.csv', [
         'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value,currency',
@@ -353,15 +349,10 @@ describe('Manual Audit truth test phase 1', () => {
       ].join('\n')),
     ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
 
-    const actual = await enhancedDetectionService.triggerDetectionPipeline(
-      SELLER_A,
-      ingestion.syncId,
-      'manual',
-      { tenantId: TENANT_A, source: 'manual_truth_test' },
-    );
-
-    expect(actual).toMatchObject({ success: true, estimatedRecovery: 0 });
-    expect((tables.detection_results || []).filter((row) => ['warehouse_transfer_loss', 'warehouse_transfer_overage_review'].includes(row.anomaly_type))).toEqual([]);
+    expect(ingestion).toMatchObject({ success: false, detectionTriggered: false });
+    expect(ingestion.results[0]).toMatchObject({ inputIssue: 'prohibited', rowsInserted: 0 });
+    expect(tables.inventory_transfers).toBeUndefined();
+    expect(tables.detection_results).toBeUndefined();
   });
 
   it('CLEAN-FEES: one legitimate uniquely referenced Manual fee produces no Fee Phantom duplicate value', async () => {
@@ -927,72 +918,34 @@ describe('Manual Audit truth test phase 1', () => {
     expect((tables.detection_results || []).some((row) => row.anomaly_type === 'refund_no_return')).toBe(false);
   });
 
-  it('TR-PARTIAL: a declared Manual Transfer of ten sent and eight received produces one USD 50 recovery', async () => {
+  it('S11-T3: a previously countable Manual Transfer shortage is prohibited before it can produce Transfer-derived monetary output', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('tr-partial.csv', [
         'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value,currency',
         'TR-PARTIAL-1,TR-SKU-1,PHX6,MDW2,10,8,2026-06-01T00:00:00Z,25,USD',
       ].join('\n')),
-    ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+    ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: true });
 
-    expect(ingestion.success).toBe(true);
-    const actual = await enhancedDetectionService.triggerDetectionPipeline(
-      SELLER_A,
-      ingestion.syncId,
-      'manual',
-      { tenantId: TENANT_A, source: 'manual_truth_test' },
-    );
-
-    expect(actual).toMatchObject({ success: true, detectionsFound: 1, estimatedRecovery: 50 });
-    expect(tables.detection_results).toHaveLength(1);
-    expect(tables.detection_results[0]).toMatchObject({
-      anomaly_type: 'warehouse_transfer_loss',
-      estimated_value: 50,
-      tenant_id: TENANT_A,
-      seller_id: SELLER_A,
-      sync_id: ingestion.syncId,
-      source_type: 'csv_upload',
-    });
-    expect(tables.detection_results[0].evidence).toMatchObject({
-      transfer_id: 'TR-PARTIAL-1',
-      quantity_sent: 10,
-      quantity_received: 8,
-      quantity_lost: 2,
-      loss_type: 'partial_loss',
-    });
+    expect(ingestion).toMatchObject({ success: false, detectionTriggered: false });
+    expect(ingestion.results[0]).toMatchObject({ inputIssue: 'prohibited', rowsInserted: 0 });
+    expect(tables.inventory_transfers).toBeUndefined();
+    expect(tables.detection_results).toBeUndefined();
   });
 
-  it('TR-TOTAL: ten declared sent and zero received units produce one USD 250 Transfer Auditor recovery', async () => {
+  it('S11-T3-total: a total Manual Transfer shortage is prohibited before it can create monetary evidence', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('tr-total.csv', [
         'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value,currency',
         'TR-TOTAL-1,TR-SKU-TOTAL,PHX6,MDW2,10,0,2026-06-01T00:00:00Z,25,USD',
       ].join('\n')),
-    ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+    ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: true });
 
-    const actual = await enhancedDetectionService.triggerDetectionPipeline(
-      SELLER_A,
-      ingestion.syncId,
-      'manual',
-      { tenantId: TENANT_A, source: 'manual_truth_test' },
-    );
-
-    expect(actual).toMatchObject({ success: true, detectionsFound: 1, estimatedRecovery: 250 });
-    expect(tables.detection_results).toHaveLength(1);
-    expect(tables.detection_results[0]).toMatchObject({
-      anomaly_type: 'warehouse_transfer_loss',
-      estimated_value: 250,
-      sync_id: ingestion.syncId,
-    });
-    expect(tables.detection_results[0].evidence).toMatchObject({
-      quantity_sent: 10,
-      quantity_received: 0,
-      quantity_lost: 10,
-      loss_type: 'total_loss',
-    });
+    expect(ingestion.results[0]).toMatchObject({ success: false, inputIssue: 'prohibited', rowsInserted: 0, detectionTriggered: false });
+    expect(tables.inventory_transfers).toBeUndefined();
+    expect(tables.detection_results).toBeUndefined();
   });
 
-  it('OVL-WHALE-TRANSFER: a declared transfer shortage reconstructable from matching ledger legs has one USD 50 Transfer Auditor economic owner', async () => {
+  it('S11-T8: Transfer CSV and Transfer-labelled ledger legs sharing a hard identity cannot persist or create a counted recovery', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('ovl-whale-transfer.csv', [
         'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value,currency',
@@ -1003,75 +956,29 @@ describe('Manual Audit truth test phase 1', () => {
         'Transfers\t2026-06-01T00:00:00Z\tOVL-WHALE-TRANSFER-FNSKU-1\tOVL-WHALE-TRANSFER-SKU-1\t-10\tOVL-WHALE-TRANSFER-1\tPHX6\t25',
         'Transfers\t2026-06-03T00:00:00Z\tOVL-WHALE-TRANSFER-FNSKU-1\tOVL-WHALE-TRANSFER-SKU-1\t8\tOVL-WHALE-TRANSFER-1\tMDW2\t25',
       ].join('\n')),
-    ], { tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+    ], { tenantId: TENANT_A, storeId: STORE_A, triggerDetection: true });
 
-    expect(ingestion.success).toBe(true);
-    const actual = await enhancedDetectionService.triggerDetectionPipeline(
-      SELLER_A,
-      ingestion.syncId,
-      'manual',
-      { tenantId: TENANT_A, source: 'manual_truth_test' },
-    );
-
-    expect(actual).toMatchObject({ success: true, estimatedRecovery: 50 });
-    const transferRows = (tables.detection_results || []).filter((row) => row.anomaly_type === 'warehouse_transfer_loss');
-    const whaleRows = (tables.detection_results || []).filter((row) => ['lost_warehouse', 'lost_in_transit'].includes(row.anomaly_type));
-    expect(transferRows).toHaveLength(1);
-    expect(transferRows[0]).toMatchObject({
-      estimated_value: 50,
-      evidence: expect.objectContaining({
-        economic_rollup: expect.objectContaining({
-          status: 'counted',
-          counted_value: 50,
-          authoritative_detector: 'Transfer Auditor',
-        }),
-      }),
-    });
-    expect(whaleRows).toHaveLength(1);
-    expect(whaleRows[0]).toMatchObject({
-      estimated_value: 50,
-      evidence: expect.objectContaining({
-        economic_rollup: expect.objectContaining({
-          status: 'linked_not_counted',
-          counted_value: 0,
-          authoritative_detector: 'Transfer Auditor',
-        }),
-      }),
-    });
-    const countedRecovery = (tables.detection_results || []).reduce(
-      (sum, row) => sum + Number(row.evidence?.economic_rollup?.counted_value ?? row.estimated_value ?? 0),
-      0,
-    );
-    expect(countedRecovery).toBe(50);
+    expect(ingestion).toMatchObject({ success: false, detectionTriggered: false, totalFiles: 2 });
+    expect(ingestion.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ csvType: 'transfers', inputIssue: 'prohibited', rowsInserted: 0 }),
+      expect.objectContaining({ csvType: 'inventory', inputIssue: 'prohibited', rowsInserted: 0 }),
+    ]));
+    expect(tables.inventory_transfers).toBeUndefined();
+    expect(tables.inventory_ledger_events).toBeUndefined();
+    expect(tables.detection_results).toBeUndefined();
   });
 
-  it('TR-OVERAGE: eight sent and ten received units create only a zero-value overage review', async () => {
+  it('S11-T3-overage: a Manual Transfer overage is prohibited rather than admitted as downstream review evidence', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('tr-overage.csv', [
         'transfer_id,sku,from_fc,to_fc,quantity_sent,quantity_received,transfer_date,unit_value,currency',
         'TR-OVERAGE-1,TR-SKU-OVERAGE,PHX6,MDW2,8,10,2026-06-01T00:00:00Z,25,USD',
       ].join('\n')),
-    ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+    ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: true });
 
-    const actual = await enhancedDetectionService.triggerDetectionPipeline(
-      SELLER_A,
-      ingestion.syncId,
-      'manual',
-      { tenantId: TENANT_A, source: 'manual_truth_test' },
-    );
-
-    expect(actual).toMatchObject({ success: true, detectionsFound: 1, estimatedRecovery: 0 });
-    expect(tables.detection_results).toHaveLength(1);
-    expect(tables.detection_results[0]).toMatchObject({
-      anomaly_type: 'warehouse_transfer_overage_review',
-      estimated_value: 0,
-      sync_id: ingestion.syncId,
-    });
-    expect(tables.detection_results[0].evidence).toMatchObject({
-      review_tier: 'review_only',
-      claim_readiness: 'not_claim_ready',
-      quantity_overage: 2,
-    });
+    expect(ingestion.results[0]).toMatchObject({ success: false, inputIssue: 'prohibited', rowsInserted: 0, detectionTriggered: false });
+    expect(tables.inventory_transfers).toBeUndefined();
+    expect(tables.detection_results).toBeUndefined();
   });
 
   it('TR-BLANK-RECEIVED: unknown receipt quantity is rejected and never becomes a loss claim', async () => {
@@ -1083,7 +990,7 @@ describe('Manual Audit truth test phase 1', () => {
     ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: true });
 
     expect(ingestion).toMatchObject({ success: false, detectionTriggered: false });
-    expect(ingestion.results[0].errors[0]).toContain('Missing required numeric field (quantity_received)');
+    expect(ingestion.results[0]).toMatchObject({ inputIssue: 'prohibited', rowsInserted: 0 });
     expect(tables.inventory_transfers || []).toEqual([]);
     expect(tables.detection_results || []).toEqual([]);
   });
@@ -1097,7 +1004,7 @@ describe('Manual Audit truth test phase 1', () => {
     ], { explicitType: 'transfers', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: true });
 
     expect(ingestion).toMatchObject({ success: false, detectionTriggered: false });
-    expect(ingestion.results[0].errors[0]).toContain('Missing required numeric field (quantity_sent)');
+    expect(ingestion.results[0]).toMatchObject({ inputIssue: 'prohibited', rowsInserted: 0 });
     expect(tables.inventory_transfers || []).toEqual([]);
     expect(tables.detection_results || []).toEqual([]);
   });
@@ -1524,6 +1431,50 @@ describe('Manual Audit truth test phase 1', () => {
     expect(reviews.every((row) => row.estimated_value === 0)).toBe(true);
   });
 
+  it('FEE-FNSKU-CONFLICT: explicitly different FNSKUs cannot be collapsed into a duplicate-fee recovery', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('fee-fnsku-conflict.csv', [
+        'FeeType,FeeAmount,PostedDate,CurrencyCode,EventId,Reference ID,AmazonOrderId,SellerSKU,FNSKU',
+        'FBAFee,15,2026-07-01T00:00:00Z,USD,FEE-FNSKU-CONFLICT-1,FEE-FNSKU-REF-1,FEE-FNSKU-ORDER-1,FEE-FNSKU-SKU-1,FNSKU-A',
+        'FBAFee,15,2026-07-01T00:00:00Z,USD,FEE-FNSKU-CONFLICT-2,FEE-FNSKU-REF-1,FEE-FNSKU-ORDER-1,FEE-FNSKU-SKU-1,FNSKU-B',
+      ].join('\n')),
+    ], { explicitType: 'fees', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, estimatedRecovery: 0 });
+    expect((tables.detection_results || []).some((row) => row.anomaly_type === 'duplicate_fee_error')).toBe(false);
+  });
+
+  it('FEE-FNSKU-MATCH: matching observed FNSKU preserves a strictly identical duplicate-fee recovery', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('fee-fnsku-match.csv', [
+        'FeeType,FeeAmount,PostedDate,CurrencyCode,EventId,Reference ID,AmazonOrderId,SellerSKU,FNSKU',
+        'FBAFee,15,2026-07-01T00:00:00Z,USD,FEE-FNSKU-MATCH-1,FEE-FNSKU-MATCH-REF-1,FEE-FNSKU-MATCH-ORDER-1,FEE-FNSKU-MATCH-SKU-1,FNSKU-MATCH',
+        'FBAFee,15,2026-07-01T00:00:00Z,USD,FEE-FNSKU-MATCH-2,FEE-FNSKU-MATCH-REF-1,FEE-FNSKU-MATCH-ORDER-1,FEE-FNSKU-MATCH-SKU-1,FNSKU-MATCH',
+      ].join('\n')),
+    ], { explicitType: 'fees', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, estimatedRecovery: 15 });
+    expect((tables.detection_results || []).find((row) => row.anomaly_type === 'duplicate_fee_error')).toMatchObject({
+      estimated_value: 15,
+      evidence: expect.objectContaining({ evidence_class: 'STRICT_IDENTITY_MATCH' }),
+    });
+  });
+
   it('FEE-LEGIT-SAME-AMOUNT: equal-value fees with distinct hard order identities produce no duplicate claim', async () => {
     const ingestion = await service.ingestFiles(SELLER_A, [
       file('fee-legit-same-amount.csv', [
@@ -1728,7 +1679,6 @@ describe('Manual Audit truth test phase 1', () => {
   it.each([
     ['COV-NO-FINANCIAL', 'Financial Events'],
     ['COV-NO-INVENTORY', 'Inventory'],
-    ['COV-NO-TRANSFERS', 'Transfers'],
     ['COV-NO-SETTLEMENTS', 'Settlements'],
     ['COV-MALFORMED-FEE', 'Fees'],
   ])('%s: one unavailable or failed Manual source remains partial and cannot be complete-clean', async (scenarioId, unavailableSource) => {
@@ -1838,7 +1788,7 @@ describe('Manual Audit truth test phase 1', () => {
         evidenceReadyCount: 0,
         recordsReviewed: 24,
         categories: [],
-        sourcesReviewed: ['orders', 'shipments', 'returns', 'settlements', 'inventory_ledger_events', 'financial_events', 'fees', 'inventory_transfers'],
+        sourcesReviewed: ['orders', 'shipments', 'returns', 'settlements', 'inventory_ledger_events', 'financial_events', 'fees'],
         sourcesUnavailable: [],
         finalStatus: 'complete_no_findings',
       },
@@ -1925,6 +1875,87 @@ describe('Manual Audit truth test phase 1', () => {
         unresolved_units: 1,
       }),
     });
+  });
+
+  it('RF-REIMB-FNSKU-CONFLICT: conflicting observed reimbursement FNSKU cannot suppress a same-order refund residual', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('rf-reimb-fnsku-conflict-settlement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,SellerSKU,FNSKU,Quantity',
+        'RF-REIMB-FNSKU-CONFLICT-REFUND-1,2026-06-01T00:00:00Z,refund,(100),0,USD,RF-REIMB-FNSKU-CONFLICT-ORDER-1,SHARED-SKU,FNSKU-REFUND,1',
+        'RF-REIMB-FNSKU-CONFLICT-REIMB-1,2026-06-05T00:00:00Z,reimbursement,100,0,USD,RF-REIMB-FNSKU-CONFLICT-ORDER-1,SHARED-SKU,FNSKU-REIMB,1',
+      ].join('\n')),
+    ], { explicitType: 'settlements', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, estimatedRecovery: 100 });
+    const refund = (tables.detection_results || []).find((row) => row.anomaly_type === 'refund_no_return');
+    expect(refund).toMatchObject({
+      estimated_value: 100,
+      evidence: expect.objectContaining({
+        order_id: 'RF-REIMB-FNSKU-CONFLICT-ORDER-1',
+        reimbursed_value: 0,
+        unresolved_units: 1,
+        shortfall_delta: 100,
+      }),
+    });
+  });
+
+  it('RF-REIMB-CURRENCY-CONFLICT: an explicitly different-currency reimbursement cannot suppress a USD refund residual', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('rf-reimb-currency-conflict-settlement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,SellerSKU,FNSKU,Quantity',
+        'RF-REIMB-CURRENCY-CONFLICT-REFUND-1,2026-06-01T00:00:00Z,refund,(100),0,USD,RF-REIMB-CURRENCY-CONFLICT-ORDER-1,SHARED-SKU,FNSKU-CURRENCY,1',
+        'RF-REIMB-CURRENCY-CONFLICT-REIMB-1,2026-06-05T00:00:00Z,reimbursement,100,0,ZAR,RF-REIMB-CURRENCY-CONFLICT-ORDER-1,SHARED-SKU,FNSKU-CURRENCY,1',
+      ].join('\n')),
+    ], { explicitType: 'settlements', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    expect(ingestion.success).toBe(true);
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, estimatedRecovery: 100 });
+    const refund = (tables.detection_results || []).find((row) => row.anomaly_type === 'refund_no_return');
+    expect(refund).toMatchObject({
+      currency: 'USD',
+      estimated_value: 100,
+      evidence: expect.objectContaining({
+        reimbursed_value: 0,
+        unresolved_units: 1,
+        shortfall_delta: 100,
+        currency_match_mode: 'mismatch',
+      }),
+    });
+  });
+
+  it('RF-REIMB-FNSKU-CURRENCY-MATCH: exact observed reimbursement identity still suppresses a fully reimbursed refund residual', async () => {
+    const ingestion = await service.ingestFiles(SELLER_A, [
+      file('rf-reimb-fnsku-currency-match-settlement.csv', [
+        'SettlementId,PostedDate,TransactionType,Amount,Fees,CurrencyCode,AmazonOrderId,SellerSKU,FNSKU,Quantity',
+        'RF-REIMB-FNSKU-CURRENCY-MATCH-REFUND-1,2026-06-01T00:00:00Z,refund,(100),0,USD,RF-REIMB-FNSKU-CURRENCY-MATCH-ORDER-1,SHARED-SKU,FNSKU-MATCH,1',
+        'RF-REIMB-FNSKU-CURRENCY-MATCH-REIMB-1,2026-06-05T00:00:00Z,reimbursement,100,0,USD,RF-REIMB-FNSKU-CURRENCY-MATCH-ORDER-1,SHARED-SKU,FNSKU-MATCH,1',
+      ].join('\n')),
+    ], { explicitType: 'settlements', tenantId: TENANT_A, storeId: STORE_A, triggerDetection: false });
+
+    const actual = await enhancedDetectionService.triggerDetectionPipeline(
+      SELLER_A,
+      ingestion.syncId,
+      'manual',
+      { tenantId: TENANT_A, source: 'manual_truth_test' },
+    );
+
+    expect(actual).toMatchObject({ success: true, estimatedRecovery: 0 });
+    expect((tables.detection_results || []).filter((row) => row.anomaly_type === 'refund_no_return')).toEqual([]);
   });
 
   it('RF-FNSKU-MATCH: matching observed FNSKU preserves existing valid same-order, same-SKU return reconciliation', async () => {

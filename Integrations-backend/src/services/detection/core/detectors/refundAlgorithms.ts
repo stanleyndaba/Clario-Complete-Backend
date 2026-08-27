@@ -297,9 +297,13 @@ export function detectRefundWithoutReturn(
         let currencyMismatchDetected = false;
         
         const matchingReimbs = reimbursements.filter(reimb => {
+            // An explicit observed FNSKU contradiction is stronger than same-order/SKU
+            // fallback and cannot reduce this refund's residual.
+            if (hasConflictingObservedFnsku(refund.fnsku, reimb.fnsku)) return false;
             if (refund.sku && reimb.sku && reimb.sku !== refund.sku) return false;
             if (reimb.currency && refund.currency && reimb.currency !== refund.currency) {
                 currencyMismatchDetected = true;
+                return false;
             }
             return true;
         });
@@ -674,7 +678,7 @@ export async function fetchReimbursementEvents(sellerId: string, options?: { sta
         .filter((s: any) => String(s.transaction_type || '').toLowerCase() === 'reimbursement')
         .map((s: any) => ({
         id: s.id, seller_id: sellerId, order_id: s.order_id,
-        sku: s.metadata?.sku, reimbursement_amount: s.amount || 0,
+        sku: s.metadata?.sku, fnsku: s.metadata?.fnsku, reimbursement_amount: s.amount || 0,
         currency: s.currency || 'USD', reimbursement_date: s.settlement_date,
         reimbursement_type: s.metadata?.adjustmentType || 'REIMBURSEMENT',
         quantity_reimbursed: s.metadata?.quantity || 0,

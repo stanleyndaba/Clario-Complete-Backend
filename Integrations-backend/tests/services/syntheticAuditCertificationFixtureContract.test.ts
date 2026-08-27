@@ -47,6 +47,18 @@ describe('synthetic audit certification fixture contract', () => {
     }
   });
 
+  it.each([
+    ['COV-SUBSET-A-RETURNS-SETTLEMENTS', ['returns_control.csv', 'settlements_control.csv']],
+    ['COV-SUBSET-B-FEES-FINANCIAL', ['fees_control.csv', 'financial_events_control.csv']],
+    ['COV-MINIMAL-ORDERS-ONLY', ['orders_control.csv']],
+  ])('accepts the valid partial source set %s without manufacturing the missing source family', (_id, subsetFiles) => {
+    const parsedRows = subsetFiles.map((fileName) => parseManualAuditDelimitedRecords(readFixture(fileName)));
+
+    expect(parsedRows.every((rows) => rows.length > 0)).toBe(true);
+    expect(subsetFiles.every((fileName) => canonicalFiles.includes(fileName))).toBe(true);
+    expect(subsetFiles).not.toContain('transfers_control.csv');
+  });
+
   it('keeps meaningful identity, chronology, and money/quantity fields explicit in every canonical source', () => {
     const orders = parseManualAuditDelimitedRecords(readFixture('orders_control.csv'));
     const shipments = parseManualAuditDelimitedRecords(readFixture('shipments_control.csv'));
