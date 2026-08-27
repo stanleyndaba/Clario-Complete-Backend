@@ -42,6 +42,106 @@ describe('auditCommercialDecisionService', () => {
     expect(decision.commercial_eligibility).toBe('ineligible');
   });
 
+  it('routes zero reviewed records to evidence remediation rather than a no-sale conclusion', () => {
+    const decision = classifyCommercialDecision({
+      currentAudit: { id: 'audit-zero', user_id: 'user-1', tenant_id: 'tenant-1', completed_at: '2026-08-01T00:00:00.000Z' },
+      currentSummary: {
+        scopeValue: 0,
+        findingsCount: 0,
+        evidenceReadyCount: 0,
+        recordsReviewed: 0,
+        categories: [],
+        sourcesReviewed: [],
+        sourcesUnavailable: ['Shipments'],
+      },
+      previousAudit: null,
+      hasRecoveryWorkspace: false,
+    });
+
+    expect(decision.commercial_state).toBe('R0-D');
+    expect(decision.commercial_route).toBe('EVIDENCE_REMEDIATION');
+    expect(decision.commercial_eligibility).toBe('recheck_later');
+  });
+
+  it('routes potential findings without enough evidence-ready scope to Nurture manual review', () => {
+    const decision = classifyCommercialDecision({
+      currentAudit: { id: 'audit-nurture', user_id: 'user-1', tenant_id: 'tenant-1', completed_at: '2026-08-01T00:00:00.000Z' },
+      currentSummary: {
+        scopeValue: 0,
+        findingsCount: 2,
+        evidenceReadyCount: 0,
+        recordsReviewed: 34,
+        categories: ['Inbound shortage'],
+        sourcesReviewed: ['Shipments'],
+        sourcesUnavailable: [],
+      },
+      previousAudit: null,
+      hasRecoveryWorkspace: false,
+    });
+
+    expect(decision.commercial_state).toBe('R0-C');
+    expect(decision.commercial_route).toBe('NURTURE');
+    expect(decision.commercial_eligibility).toBe('manual_review');
+    expect(decision.commercial_reason).toContain('not yet strong enough');
+  });
+
+  it('routes an otherwise clean audit with unavailable sources to Nurture recheck later', () => {
+    const decision = classifyCommercialDecision({
+      currentAudit: { id: 'audit-limited', user_id: 'user-1', tenant_id: 'tenant-1', completed_at: '2026-08-01T00:00:00.000Z' },
+      currentSummary: {
+        scopeValue: 0,
+        findingsCount: 0,
+        evidenceReadyCount: 0,
+        recordsReviewed: 34,
+        categories: [],
+        sourcesReviewed: ['Orders'],
+        sourcesUnavailable: ['Settlements'],
+      },
+      previousAudit: null,
+      hasRecoveryWorkspace: false,
+    });
+
+    expect(decision.commercial_state).toBe('R0-C');
+    expect(decision.commercial_route).toBe('NURTURE');
+    expect(decision.commercial_eligibility).toBe('recheck_later');
+  });
+
+  it('keeps a prior recovery scope that has resolved in the current audit out of paid routing', () => {
+    const decision = classifyCommercialDecision({
+      currentAudit: { id: 'audit-resolved', user_id: 'user-1', tenant_id: 'tenant-1', completed_at: '2026-08-01T00:00:00.000Z' },
+      currentSummary: {
+        scopeValue: 0,
+        findingsCount: 0,
+        evidenceReadyCount: 0,
+        recordsReviewed: 50,
+        categories: [],
+        sourcesReviewed: ['Orders'],
+        sourcesUnavailable: [],
+      },
+      previousAudit: {
+        id: 'audit-prior',
+        user_id: 'user-1',
+        tenant_id: 'tenant-1',
+        completed_at: '2026-07-01T00:00:00.000Z',
+        summary: {
+          scopeValue: 500,
+          findingsCount: 1,
+          evidenceReadyCount: 1,
+          recordsReviewed: 50,
+          categories: ['Refund mismatch'],
+          sourcesReviewed: ['Orders'],
+          sourcesUnavailable: [],
+        },
+      },
+      hasRecoveryWorkspace: false,
+    });
+
+    expect(decision.commercial_state).toBe('R0-B');
+    expect(decision.commercial_route).toBe('NO_SALE');
+    expect(decision.commercial_eligibility).toBe('ineligible');
+    expect(decision.commercial_reason).toContain('Prior findings are no longer present');
+  });
+
   it('classifies a verified recovery as Recover Once', () => {
     const decision = classifyCommercialDecision({
       currentAudit: {
