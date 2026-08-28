@@ -152,13 +152,19 @@ export function calculateRecoverOnceQuote(input: {
   return { status: 'available', amountSubunits, tier };
 }
 
+const RECOVER_ONCE_DISPLAY_AMOUNTS: Record<number, string> = {
+  [RECOVER_ONCE_QUOTE_AMOUNTS.light]: '$89',
+  [RECOVER_ONCE_QUOTE_AMOUNTS.standard]: '$179',
+  [RECOVER_ONCE_QUOTE_AMOUNTS.complex]: '$299',
+};
+
 function toSafeQuote(row: QuoteRow) {
   return {
     id: row.id,
     status: row.status,
     currency: row.currency,
     amount_subunits: row.amount_subunits,
-    display_amount: row.amount_subunits ? `R${Math.round(row.amount_subunits / 100).toLocaleString('en-ZA')}` : null,
+    display_amount: row.amount_subunits ? RECOVER_ONCE_DISPLAY_AMOUNTS[row.amount_subunits] || null : null,
     expires_at: row.expires_at,
     accepted_at: row.accepted_at,
     paid_at: row.paid_at,
