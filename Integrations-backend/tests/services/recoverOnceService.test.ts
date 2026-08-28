@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { calculateRecoverOnceQuote } from '../../src/services/recoverOnceService';
+import { calculateRecoverOnceQuote, isRecoverOnceTransitionAllowed } from '../../src/services/recoverOnceService';
 
 describe('Recover Once quote calculation', () => {
   it('returns unavailable when there is no actionable scope', () => {
@@ -45,5 +45,26 @@ describe('Recover Once quote calculation', () => {
 
     expect(quote.status).toBe('manual_review_required');
     expect(quote.amountSubunits).toBeNull();
+  });
+});
+
+describe('Recover Once lifecycle safety', () => {
+  it('allows only the forward operational lifecycle and explicit seller approval boundary', () => {
+    expect(isRecoverOnceTransitionAllowed('preparing', 'ready_for_review')).toBe(true);
+    expect(isRecoverOnceTransitionAllowed('ready_for_review', 'awaiting_seller_approval')).toBe(true);
+    expect(isRecoverOnceTransitionAllowed('awaiting_seller_approval', 'in_progress')).toBe(true);
+    expect(isRecoverOnceTransitionAllowed('in_progress', 'completed')).toBe(true);
+  });
+
+  it('fails closed for skipped, reversed, and cross-product transitions', () => {
+    expect(isRecoverOnceTransitionAllowed('preparing', 'in_progress')).toBe(false);
+    expect(isRecoverOnceTransitionAllowed('completed', 'in_progress')).toBe(false);
+    expect(isRecoverOnceTransitionAllowed('preparing', 'workspace_active')).toBe(false);
+    expect(isRecoverOnceTransitionAllowed('awaiting_seller_approval', 'completed')).toBe(false);
+  });
+
+  it('permits idempotent same-state replay without creating a new transition', () => {
+    expect(isRecoverOnceTransitionAllowed('preparing', 'preparing')).toBe(true);
+    expect(isRecoverOnceTransitionAllowed('completed', 'completed')).toBe(true);
   });
 });

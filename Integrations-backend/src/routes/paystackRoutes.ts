@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { authenticateToken } from '../middleware/authMiddleware';
+import requirePlatformAdmin from '../middleware/platformAdminMiddleware';
 import { getPaymentByReference } from '../services/paymentRepository';
 import recoverOnceService from '../services/recoverOnceService';
 import paystackSubscriptionService, { WorkspaceCommercialEligibilityError } from '../services/paystackSubscriptionService';
@@ -192,6 +193,44 @@ router.get('/recover-once/engagements/:engagementId', authenticateToken, async (
   } catch (error: any) {
     const message = error?.message || 'Failed to load Recover Once engagement';
     const status = /not found/i.test(message) ? 404 : /required|membership/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
+router.post('/recover-once/admin/engagements/:engagementId/transition', authenticateToken, requirePlatformAdmin, async (req: Request, res: Response) => {
+  try {
+    const engagementId = String(req.params.engagementId || '').trim();
+    const targetStatus = String(req.body?.status || '').trim() as any;
+    if (!engagementId || !targetStatus) return res.status(400).json({ success: false, message: 'engagementId and status are required' });
+    const engagement = await recoverOnceService.advanceOperationalState({
+      engagementId,
+      targetStatus,
+      exceptionReason: req.body?.exception_reason || null,
+    });
+    return res.json({ success: true, engagement });
+  } catch (error: any) {
+    const message = error?.message || 'Failed to advance Recover Once engagement';
+    const status = /not found/i.test(message) ? 404 : /invalid|reason|required|transition/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
+router.post('/recover-once/engagements/:engagementId/approve', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const user = getUser(req);
+    if (!user.id) return res.status(401).json({ success: false, message: 'Authentication required' });
+    const engagementId = String(req.params.engagementId || '').trim();
+    if (!engagementId) return res.status(400).json({ success: false, message: 'engagementId is required' });
+    const result = await recoverOnceService.approveEngagement({
+      engagementId,
+      userId: user.id,
+      tenantId: getTenantId(req),
+    });
+    if (!result.success && (result as any).status) return res.status((result as any).status).json(result);
+    return res.json(result);
+  } catch (error: any) {
+    const message = error?.message || 'Failed to approve Recover Once engagement';
+    const status = /not found/i.test(message) ? 404 : /approval|required|transition/i.test(message) ? 400 : 500;
     return res.status(status).json({ success: false, message });
   }
 });

@@ -154,6 +154,22 @@ export function calculateRecoverOnceQuote(input: {
   return { status: 'available', amountSubunits, tier };
 }
 
+export const RECOVER_ONCE_ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  active: ['preparing', 'cancelled', 'exception'],
+  preparing: ['ready_for_review', 'cancelled', 'exception'],
+  ready_for_review: ['awaiting_seller_approval', 'cancelled', 'exception'],
+  awaiting_seller_approval: ['in_progress', 'cancelled', 'exception'],
+  in_progress: ['completed', 'exception'],
+  completed: [],
+  cancelled: [],
+  exception: [],
+};
+
+export function isRecoverOnceTransitionAllowed(from: string, to: string): boolean {
+  if (from === to) return true;
+  return Boolean(RECOVER_ONCE_ALLOWED_TRANSITIONS[from]?.includes(to));
+}
+
 const RECOVER_ONCE_DISPLAY_AMOUNTS: Record<number, string> = {
   [RECOVER_ONCE_QUOTE_AMOUNTS.light]: '$89',
   [RECOVER_ONCE_QUOTE_AMOUNTS.standard]: '$179',
@@ -421,14 +437,15 @@ class RecoverOnceService {
     };
   }
 
-  private async createEngagement(quote: QuoteRow, payment: any) {
+  private async createEngagement(quote: QuoteRow, payment: any): Promise<{ engagement: any; created: boolean }> {
     const { data: existing } = await supabaseAdmin
       .from('recover_once_engagements')
       .select('*')
       .eq('quote_id', quote.id)
       .maybeSingle();
-    if (existing) return existing;
+    if (existing) return { engagement: existing, created: false };
 
+    const startedAt = new Date().toISOString();
     const { data, error } = await supabaseAdmin
       .from('recover_once_engagements')
       .insert({
@@ -439,13 +456,92 @@ class RecoverOnceService {
         payment_id: payment.id,
         status: 'preparing',
         scope_snapshot: quote.scope_snapshot,
-        preparation_started_at: new Date().toISOString(),
+        preparation_started_at: startedAt,
       })
       .select('*')
       .single();
 
-    if (error || !data) throw new Error(`Failed to create Recover Once engagement: ${error?.message || 'Unknown error'}`);
+    if (error || !data) {
+      // A duplicate callback can race the initial insert. Re-read the unique quote row
+      // and treat the already-created engagement as the authoritative result.
+      const { data: raced } = await supabaseAdmin
+        .from('recover_once_engagements')
+        .select('*')
+        .eq('quote_id', quote.id)
+        .maybeSingle();
+      if (raced) return { engagement: raced, created: false };
+      throw new Error(`Failed to create Recover Once engagement: ${error?.message || 'Unknown error'}`);
+    }
+    return { engagement: data, created: true };
+  }
+
+  private readonly allowedTransitions: Record<string, string[]> = RECOVER_ONCE_ALLOWED_TRANSITIONS;
+
+  async advanceOperationalState(input: {
+    engagementId: string;
+    targetStatus: 'preparing' | 'ready_for_review' | 'awaiting_seller_approval' | 'in_progress' | 'completed' | 'cancelled' | 'exception';
+    exceptionReason?: string | null;
+  }) {
+    const { data: current, error: currentError } = await supabaseAdmin
+      .from('recover_once_engagements')
+      .select('*')
+      .eq('id', input.engagementId)
+      .maybeSingle();
+    if (currentError) throw new Error(`Failed to load Recover Once engagement: ${currentError.message}`);
+    if (!current) throw new Error('Recover Once engagement not found');
+    if (current.status === input.targetStatus) return current;
+    if (!isRecoverOnceTransitionAllowed(String(current.status), input.targetStatus)) {
+      throw new Error(`Invalid Recover Once lifecycle transition: ${current.status} -> ${input.targetStatus}`);
+    }
+    if (input.targetStatus === 'exception' && !String(input.exceptionReason || '').trim()) {
+      throw new Error('An exception reason is required');
+    }
+
+    const now = new Date().toISOString();
+    const patch: Record<string, unknown> = { status: input.targetStatus, updated_at: now };
+    if (input.targetStatus === 'preparing') patch.preparation_started_at = current.preparation_started_at || now;
+    if (input.targetStatus === 'ready_for_review') patch.ready_for_review_at = now;
+    if (input.targetStatus === 'in_progress') patch.seller_approved_at = current.seller_approved_at || now;
+    if (input.targetStatus === 'completed') patch.completed_at = now;
+    if (input.targetStatus === 'exception') patch.exception_reason = String(input.exceptionReason).trim();
+
+    const { data, error } = await supabaseAdmin
+      .from('recover_once_engagements')
+      .update(patch)
+      .eq('id', input.engagementId)
+      .eq('status', current.status)
+      .select('*')
+      .single();
+    if (error || !data) throw new Error(`Recover Once lifecycle transition was not applied: ${error?.message || 'state changed concurrently'}`);
     return data;
+  }
+
+  async approveEngagement(input: { engagementId: string; userId: string; tenantId?: string | null }) {
+    const existing = await this.getEngagement({ ...input });
+    if (!existing.success) return existing;
+    if (existing.engagement.status !== 'awaiting_seller_approval') {
+      throw new Error('Recover Once engagement is not awaiting seller approval');
+    }
+    const updated = await this.advanceOperationalState({ engagementId: input.engagementId, targetStatus: 'in_progress' });
+    return { success: true, engagement: this.toEngagementResponse(updated) };
+  }
+
+  private toEngagementResponse(data: any) {
+    return {
+      id: data.id,
+      status: data.status,
+      audit_run_id: data.audit_run_id,
+      quote_id: data.quote_id,
+      scope_snapshot: data.scope_snapshot,
+      started_at: data.started_at,
+      preparation_started_at: data.preparation_started_at || data.started_at,
+      ready_for_review_at: data.ready_for_review_at || null,
+      seller_approved_at: data.seller_approved_at || null,
+      completed_at: data.completed_at || null,
+      exception_reason: data.exception_reason || null,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+    };
   }
 
   async finalizeReference(reference: string) {
@@ -497,22 +593,24 @@ class RecoverOnceService {
       .single();
     if (error || !paidQuote) throw new Error(`Failed to mark Recover Once quote paid: ${error?.message || 'Unknown error'}`);
 
-    const engagement = await this.createEngagement(paidQuote, paidPayment);
-    try {
-      await notifyRecoverOnceActivated({
-        engagementId: engagement.id,
-        userId: quote.user_id,
-        tenantId: quote.tenant_id,
-      });
-      await supabaseAdmin
-        .from('recover_once_engagements')
-        .update({ last_customer_notified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-        .eq('id', engagement.id);
-    } catch (notificationError: any) {
-      logger.warn('[RECOVER_ONCE] Customer lifecycle email failed after verified payment', {
-        engagementId: engagement.id,
-        error: notificationError?.message || notificationError,
-      });
+    const { engagement, created } = await this.createEngagement(paidQuote, paidPayment);
+    if (created) {
+      try {
+        await notifyRecoverOnceActivated({
+          engagementId: engagement.id,
+          userId: quote.user_id,
+          tenantId: quote.tenant_id,
+        });
+        await supabaseAdmin
+          .from('recover_once_engagements')
+          .update({ last_customer_notified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+          .eq('id', engagement.id);
+      } catch (notificationError: any) {
+        logger.warn('[RECOVER_ONCE] Customer lifecycle email failed after verified payment', {
+          engagementId: engagement.id,
+          error: notificationError?.message || notificationError,
+        });
+      }
     }
 
     return {
