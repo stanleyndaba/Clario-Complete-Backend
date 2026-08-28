@@ -223,6 +223,67 @@ describe('auditCommercialDecisionService', () => {
     expect(decision.commercial_state).toBe('WORKSPACE');
     expect(decision.commercial_route).toBe('RECOVERY_CONTROL');
     expect(decision.commercial_eligibility).toBe('eligible');
+    expect(decision.commercial_reason).toContain('an existing Recovery Workspace');
+    expect(decision.commercial_reason).toContain('not an Enterprise or Scale qualification');
+  });
+
+  it('keeps a large one-time recovery in Recover Once rather than inferring Talk to Sales', () => {
+    const decision = classifyCommercialDecision({
+      currentAudit: { id: 'audit-large-once', user_id: 'user-1', tenant_id: 'tenant-1', completed_at: '2026-08-01T00:00:00.000Z' },
+      currentSummary: {
+        scopeValue: 80000,
+        findingsCount: 8,
+        evidenceReadyCount: 8,
+        recordsReviewed: 120,
+        categories: ['Inbound shortage', 'Fee discrepancy'],
+        sourcesReviewed: ['Orders', 'Shipments', 'Settlements'],
+        sourcesUnavailable: [],
+      },
+      previousAudit: null,
+      hasRecoveryWorkspace: false,
+    });
+
+    expect(decision.commercial_route).toBe('RECOVER_ONCE');
+    expect(decision.commercial_eligibility).toBe('eligible');
+  });
+
+  it('routes recurring high-burden evidence to Talk to Sales with the score basis', () => {
+    const previousAudit = {
+      id: 'audit-recurring-prev',
+      user_id: 'user-1',
+      tenant_id: 'tenant-1',
+      completed_at: '2026-07-01T00:00:00.000Z',
+      summary: {
+        scopeValue: 4000,
+        findingsCount: 2,
+        evidenceReadyCount: 1,
+        recordsReviewed: 40,
+        categories: ['Settlement discrepancy'],
+        sourcesReviewed: ['Settlements'],
+        sourcesUnavailable: [],
+      },
+    };
+    const currentSummary = {
+      scopeValue: 7000,
+      findingsCount: 3,
+      evidenceReadyCount: 2,
+      recordsReviewed: 60,
+      categories: ['Settlement discrepancy', 'Refund mismatch'],
+      sourcesReviewed: ['Settlements', 'Returns'],
+      sourcesUnavailable: ['Shipments'],
+    };
+
+    const decision = classifyCommercialDecision({
+      currentAudit: { id: 'audit-recurring-current', user_id: 'user-1', tenant_id: 'tenant-1', completed_at: '2026-08-01T00:00:00.000Z' },
+      currentSummary,
+      previousAudit,
+      hasRecoveryWorkspace: false,
+    });
+
+    expect(decision.commercial_route).toBe('RECOVERY_CONTROL');
+    expect(decision.commercial_eligibility).toBe('eligible');
+    expect(decision.commercial_reason).toContain('operational-burden score of 21');
+    expect(decision.commercial_reason).toContain('not an Enterprise or Scale qualification');
   });
 
   it('builds a control statement from the decision', () => {

@@ -195,7 +195,7 @@ export function compareAuditPeriods(previous: AuditSummaryLike | null | undefine
   const persistentCategories = curr.categories.filter((category) => previousCategories.has(category));
   const unresolvedSources = curr.sourcesUnavailable;
   const sourcesChanged = Array.from(new Set([...prev.sourcesReviewed, ...curr.sourcesReviewed, ...prev.sourcesUnavailable, ...curr.sourcesUnavailable]));
-  const recurringBurden = curr.findingsCount > 0 && (
+  const recurringBurden = Boolean(previous) && curr.findingsCount > 0 && (
     curr.scopeValue > 0 ||
     curr.recordsReviewed > 0 ||
     curr.evidenceReadyCount > 0 ||
@@ -246,8 +246,12 @@ function buildReason(state: CommercialState, route: CommercialRoute, current: Re
     case 'RECOVER_ONCE':
       return `${availabilityNote} Margin identified a verified recovery opportunity that can be executed as a one-time engagement.`;
     case 'WORKSPACE':
-    case 'RECOVERY_CONTROL':
-      return `${availabilityNote} The audit shows recurring recovery/control work that is better handled through continuous monitoring.`;
+    case 'RECOVERY_CONTROL': {
+      const basis = hasRecoveryWorkspace
+        ? 'an existing Recovery Workspace'
+        : `recurring burden with an operational-burden score of ${comparison.operational_burden_score} (threshold: 15)`;
+      return `${availabilityNote} Margin recommended a sales-led recovery-control conversation because the audit indicates ${basis}. This is not an Enterprise or Scale qualification.`;
+    }
     case 'EVIDENCE_REMEDIATION':
       return `${availabilityNote} Margin could not fully evaluate the recovery opportunity without additional evidence.`;
     case 'PROVIDER_QA':
