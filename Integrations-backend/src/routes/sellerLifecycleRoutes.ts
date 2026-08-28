@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Request, Router } from 'express';
 import { authenticateToken, AuthenticatedRequest } from '../middleware/authMiddleware';
 import sellerLifecycleService from '../services/sellerLifecycleService';
 
@@ -6,7 +6,7 @@ const router = Router();
 
 router.use(authenticateToken);
 
-router.get('/', async (req: AuthenticatedRequest, res) => {
+router.get('/', async (req: AuthenticatedRequest & Request, res) => {
   try {
     const userId = String(req.user?.id || '').trim();
     const tenantId = String((req as any).tenant?.tenantId || '').trim();
