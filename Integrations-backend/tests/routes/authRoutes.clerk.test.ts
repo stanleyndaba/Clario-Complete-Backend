@@ -3,9 +3,10 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 const mockVerifyAccessToken = jest.fn();
-const mockResolveClerkPrimaryEmail = jest.fn();
+const mockResolveClerkUserProfile = jest.fn();
 const mockEnsureAuthenticatedUserWorkspace = jest.fn();
 const mockSendWorkspaceCreatedWelcomeEmailOnce = jest.fn();
+const mockAttachIntent = jest.fn();
 
 jest.mock('../../src/utils/authTokenVerifier', () => ({
   extractRequestToken: jest.fn((req: any) => {
@@ -16,7 +17,7 @@ jest.mock('../../src/utils/authTokenVerifier', () => ({
     return req.cookies?.session_token || null;
   }),
   verifyAccessToken: mockVerifyAccessToken,
-  resolveClerkPrimaryEmail: mockResolveClerkPrimaryEmail
+  resolveClerkUserProfile: mockResolveClerkUserProfile
 }));
 
 jest.mock('../../src/services/userWorkspaceBootstrap', () => ({
@@ -26,6 +27,13 @@ jest.mock('../../src/services/userWorkspaceBootstrap', () => ({
 jest.mock('../../src/services/welcomeEmailService', () => ({
   welcomeEmailService: {
     sendWorkspaceCreatedWelcomeEmailOnce: mockSendWorkspaceCreatedWelcomeEmailOnce
+  }
+}));
+
+jest.mock('../../src/services/auditIntentService', () => ({
+  __esModule: true,
+  default: {
+    attachIntent: mockAttachIntent
   }
 }));
 
@@ -60,6 +68,11 @@ describe('authRoutes Clerk bootstrap bridge', () => {
     delete process.env.PAYSTACK_REVIEW_EMAIL;
     delete process.env.PAYSTACK_REVIEW_PASSWORD;
 
+    mockResolveClerkUserProfile.mockResolvedValue({
+      email: 'primary@example.com',
+      firstName: 'Amina'
+    } as never);
+    mockAttachIntent.mockResolvedValue(null as never);
     mockEnsureAuthenticatedUserWorkspace.mockResolvedValue({
       userId: 'margin-user-uuid',
       email: 'primary@example.com',
@@ -78,14 +91,13 @@ describe('authRoutes Clerk bootstrap bridge', () => {
     } as never);
   });
 
-  it('resolves Clerk primary email once during bootstrap and preserves response shape', async () => {
+  it('resolves the verified Clerk profile once, passes its first name to the welcome email, and preserves response shape', async () => {
     mockVerifyAccessToken.mockResolvedValue({
       id: 'margin-user-uuid',
       clerkUserId: 'user_clerk123',
       email: '',
       source: 'clerk'
     } as never);
-    mockResolveClerkPrimaryEmail.mockResolvedValue('primary@example.com' as never);
 
     const response = await request(createApp())
       .post('/api/auth/bootstrap')
@@ -98,8 +110,8 @@ describe('authRoutes Clerk bootstrap bridge', () => {
       });
 
     expect(response.status).toBe(200);
-    expect(mockResolveClerkPrimaryEmail).toHaveBeenCalledTimes(1);
-    expect(mockResolveClerkPrimaryEmail).toHaveBeenCalledWith('user_clerk123');
+    expect(mockResolveClerkUserProfile).toHaveBeenCalledTimes(1);
+    expect(mockResolveClerkUserProfile).toHaveBeenCalledWith('user_clerk123');
     expect(mockEnsureAuthenticatedUserWorkspace).toHaveBeenCalledWith({
       userId: 'margin-user-uuid',
       clerkUserId: 'user_clerk123',
@@ -108,6 +120,15 @@ describe('authRoutes Clerk bootstrap bridge', () => {
       preferredTenantSlug: 'primary-workspace',
       foundingReservation: true,
       authProvider: 'clerk'
+    });
+    expect(mockSendWorkspaceCreatedWelcomeEmailOnce).toHaveBeenCalledWith({
+      userId: 'margin-user-uuid',
+      email: 'primary@example.com',
+      firstName: 'Amina',
+      tenantId: 'tenant-123',
+      tenantName: 'Primary Workspace',
+      tenantSlug: 'primary-workspace',
+      suppressForAuditProgress: false
     });
     expect(response.body).toEqual({
       success: true,
@@ -130,6 +151,46 @@ describe('authRoutes Clerk bootstrap bridge', () => {
       foundingReservation: false,
       foundingActivationReady: false,
       auditIntent: null
+    });
+  });
+
+  it('suppresses the welcome email after an Audit intent attaches during account bootstrap', async () => {
+    mockVerifyAccessToken.mockResolvedValue({
+      id: 'margin-user-uuid',
+      clerkUserId: 'user_clerk123',
+      email: '',
+      source: 'clerk'
+    } as never);
+    mockAttachIntent.mockResolvedValue({
+      id: 'intent-123',
+      source_type: 'sp_api',
+      status: 'attached',
+      return_path: '/audit',
+      audit_run_id: null,
+      expires_at: '2027-01-01T00:00:00.000Z'
+    } as never);
+
+    const response = await request(createApp())
+      .post('/api/auth/bootstrap')
+      .set('Authorization', 'Bearer clerk-session-token')
+      .send({ auditIntentId: 'intent-123' });
+
+    expect(response.status).toBe(200);
+    expect(mockAttachIntent).toHaveBeenCalledWith({
+      intentId: 'intent-123',
+      userId: 'margin-user-uuid',
+      tenantId: 'tenant-123'
+    });
+    expect(mockSendWorkspaceCreatedWelcomeEmailOnce).toHaveBeenCalledWith(expect.objectContaining({
+      suppressForAuditProgress: true
+    }));
+    expect(response.body.auditIntent).toEqual({
+      id: 'intent-123',
+      source_type: 'sp_api',
+      status: 'attached',
+      return_path: '/audit',
+      audit_run_id: null,
+      expires_at: '2027-01-01T00:00:00.000Z'
     });
   });
 

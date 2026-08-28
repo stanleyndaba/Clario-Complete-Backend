@@ -187,29 +187,50 @@ function getVerifiedClerkEmail(emailAddress: any): string | null {
   return value && isVerified ? value : null;
 }
 
-export async function resolveClerkPrimaryEmail(userId: string): Promise<string | null> {
+export interface ResolvedClerkProfile {
+  email: string | null;
+  firstName: string | null;
+}
+
+/**
+ * Read the verified identity details required during account bootstrap. This
+ * intentionally uses Clerk as the source of truth; no display name is derived
+ * from an email address.
+ */
+export async function resolveClerkUserProfile(userId: string): Promise<ResolvedClerkProfile> {
   const secretKey = getClerkSecretKey();
   if (!secretKey || !userId) {
-    return null;
+    return { email: null, firstName: null };
   }
 
   try {
     const clerkClient = createClerkClient({ secretKey });
     const clerkUser = await clerkClient.users.getUser(userId);
-    const primaryEmail =
+    const email =
       getVerifiedClerkEmail(clerkUser.primaryEmailAddress) ||
       getVerifiedClerkEmail(clerkUser.emailAddresses.find((emailAddress) => emailAddress.id === clerkUser.primaryEmailAddressId)) ||
       clerkUser.emailAddresses.map(getVerifiedClerkEmail).find(Boolean) ||
       null;
+    const firstName = typeof clerkUser.firstName === 'string' && clerkUser.firstName.trim()
+      ? clerkUser.firstName.trim()
+      : null;
 
-    return primaryEmail;
+    return { email, firstName };
   } catch (error: any) {
-    logger.warn('Failed to resolve Clerk user email during bootstrap', {
+    logger.warn('Failed to resolve Clerk user profile during bootstrap', {
       userId,
       error: error?.message || 'Unknown Clerk user lookup error'
     });
-    return null;
+    return { email: null, firstName: null };
   }
+}
+
+/**
+ * Compatibility helper retained for callers that only need the verified email.
+ */
+export async function resolveClerkPrimaryEmail(userId: string): Promise<string | null> {
+  const profile = await resolveClerkUserProfile(userId);
+  return profile.email;
 }
 
 export async function verifyAccessToken(token: string): Promise<VerifiedAuthUser | null> {

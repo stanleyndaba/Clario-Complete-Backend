@@ -6,7 +6,7 @@ import enhancedDetectionService from './enhancedDetectionService';
 import logger from '../utils/logger';
 import workspaceEntitlementService from './workspaceEntitlementService';
 import { withPostgresTransaction } from '../database/postgresTransaction';
-import tokenManager from '../utils/tokenManager';
+import { getAuthoritativeAmazonConnectionTruth } from './amazonConnectionTruthService';
 import {
   buildControlStatement,
   classifyCommercialDecision,
@@ -774,22 +774,13 @@ class AuditRunService {
   }
 
   private async getAmazonConnection(userId: string, tenantId: string) {
-    const safeUserId = convertUserIdToUuid(userId);
-    const { data } = await supabaseAdmin
-      .from('tokens')
-      .select('id, store_id, expires_at, credential_status')
-      .eq('user_id', safeUserId)
-      .eq('tenant_id', tenantId)
-      .eq('provider', 'amazon')
-      .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const truth = await getAuthoritativeAmazonConnectionTruth({ userId, tenantId });
+    if (!truth.connected || !truth.storeId) return null;
 
-    if (!data?.id) return null;
-    if (data.credential_status === 'reconnect_required') return null;
-    const usable = await tokenManager.isTokenValid(userId, 'amazon', data.store_id || undefined);
-    if (!usable) return null;
-    return data;
+    return {
+      id: 'authoritative-amazon-connection',
+      store_id: truth.storeId,
+    };
   }
 
   async startAudit(userId: string, email?: string | null, auditIntentId?: string | null, preferredTenantSlug?: string | null): Promise<{

@@ -9,6 +9,7 @@ import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supaba
 import logger from '../utils/logger';
 import { extractRequestToken, verifyAccessToken } from '../utils/authTokenVerifier';
 import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
+import { getAuthoritativeAmazonConnectionTruth } from '../services/amazonConnectionTruthService';
 import { getManagedTokenSourceFields } from '../utils/evidenceSourceRecordShape';
 import { buildEvidenceUserFilter } from '../services/evidenceSourceTruthService';
 
@@ -808,39 +809,24 @@ export const getIntegrationStatus = async (req: Request, res: Response) => {
       .filter(([provider]) => provider !== 'amazon' && response.providers[provider].connected);
     response.docs_connected = connectedNonAmazonProviders.length > 0;
 
-    const amazonConnectionReady =
-      amazonTokenPresent &&
-      amazonTokenNotExpired &&
-      amazonTenantBound &&
-      amazonSellerResolved &&
-      amazonStoreBound;
-
-    if (!amazonTokenPresent) {
-      amazonConnectionErrorMessage = undefined;
-    } else if (!amazonTokenNotExpired) {
-      amazonConnectionErrorMessage = 'Amazon token is expired and must be refreshed through reconnect.';
-    } else if (!amazonTenantBound) {
-      amazonConnectionErrorMessage = 'Amazon token is not bound to the active tenant.';
-    } else if (!amazonSellerResolved) {
-      amazonConnectionErrorMessage = 'Amazon seller identity is not resolved on the authenticated app user.';
-    } else if (!amazonStoreBound) {
-      amazonConnectionErrorMessage = 'Amazon token is not bound to a valid store.';
-    }
+    const amazonTruth = await getAuthoritativeAmazonConnectionTruth({
+      userId,
+      tenantId: tenant.id,
+    });
+    const amazonConnectionReady = amazonTruth.connected;
 
     response.amazon_connected = amazonConnectionReady;
     response.providers.amazon.connected = amazonConnectionReady;
     response.providers.amazon.auth_valid = amazonConnectionReady;
-    response.providers.amazon.needs_reconnect = amazonTokenPresent && !amazonTokenNotExpired;
-    response.providers.amazon.token_present = amazonTokenPresent;
-    response.providers.amazon.token_not_expired = amazonTokenNotExpired;
-    response.providers.amazon.tenant_bound = amazonTenantBound;
-    response.providers.amazon.seller_resolved = amazonSellerResolved;
-    response.providers.amazon.store_bound = amazonStoreBound;
+    response.providers.amazon.needs_reconnect = amazonTruth.needsReconnect;
+    response.providers.amazon.token_present = amazonTruth.tokenPresent;
+    response.providers.amazon.token_not_expired = amazonTruth.tokenNotExpired;
+    response.providers.amazon.tenant_bound = amazonTruth.tenantBound;
+    response.providers.amazon.seller_resolved = amazonTruth.sellerResolved;
+    response.providers.amazon.store_bound = amazonTruth.storeBound;
     response.providers.amazon.connection_truth_basis = 'stored_token_and_binding';
-    response.providers.amazon.error_message = amazonConnectionErrorMessage || response.providers.amazon.error_message;
-    response.providers.amazon.error_state = !amazonConnectionReady && amazonConnectionErrorMessage
-      ? (amazonTokenPresent && !amazonTokenNotExpired ? 'auth_invalid' : 'provider_error')
-      : response.providers.amazon.error_state;
+    response.providers.amazon.error_message = amazonTruth.errorMessage || response.providers.amazon.error_message;
+    response.providers.amazon.error_state = amazonTruth.errorState || response.providers.amazon.error_state;
     response.providers.amazon.ingestion_state = computeIngestionState(
       response.providers.amazon.connected,
       response.providers.amazon.auth_valid,

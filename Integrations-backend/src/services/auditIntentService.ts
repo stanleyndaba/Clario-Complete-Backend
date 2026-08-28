@@ -25,13 +25,66 @@ function normalizeSourceType(value: unknown): AuditIntentSourceType {
   return value === 'csv_upload' ? 'csv_upload' : 'sp_api';
 }
 
+function decodePathForValidation(value: string): string | null {
+  let decoded = value;
+
+  for (let index = 0; index < 3; index += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      return null;
+    }
+  }
+
+  return decoded;
+}
+
+/**
+ * Returns a canonical relative path only for the two seller-continuation
+ * surfaces that Audit intents are allowed to resume. It deliberately decodes
+ * before validation so encoded or mixed slash scheme tricks cannot bypass the
+ * route allowlist.
+ */
+export function getSafeAuditIntentReturnPath(value: unknown): string | null {
+  const raw = typeof value === 'string' ? value : '';
+  if (!raw || raw !== raw.trim() || raw.length > 300 || /[\u0000-\u001F\u007F]/.test(raw)) {
+    return null;
+  }
+
+  const decoded = decodePathForValidation(raw);
+  if (!decoded || /[\\\u0000-\u001F\u007F]/.test(decoded)) {
+    return null;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(decoded, 'https://margin.invalid');
+  } catch {
+    return null;
+  }
+
+  if (
+    parsed.origin !== 'https://margin.invalid' ||
+    parsed.hash ||
+    !decoded.startsWith('/') ||
+    decoded.startsWith('//') ||
+    /^\/(?:javascript|data|vbscript):/i.test(decoded)
+  ) {
+    return null;
+  }
+
+  if (parsed.pathname !== '/audit' && parsed.pathname !== '/data-upload') {
+    return null;
+  }
+
+  return `${parsed.pathname}${parsed.search}`;
+}
+
 function normalizeReturnPath(value: unknown, sourceType: AuditIntentSourceType) {
   const fallback = sourceType === 'csv_upload' ? '/data-upload?returnTo=audit' : '/audit';
-  const raw = String(value || fallback).trim();
-  if (!raw.startsWith('/') || raw.startsWith('//') || raw.startsWith('/login')) {
-    return fallback;
-  }
-  return raw.slice(0, 300);
+  return getSafeAuditIntentReturnPath(value) || fallback;
 }
 
 function normalizeIdempotencyKey(value: unknown): string | null {
@@ -134,6 +187,20 @@ class AuditIntentService {
     }
 
     if (isTerminalIntentStatus(intent.status)) {
+      return null;
+    }
+
+    return intent;
+  }
+
+  /**
+   * Read-only counterpart for lifecycle resolution. It recognizes expired and
+   * terminal intents without persisting a state transition, keeping GET
+   * lifecycle resolution free of writes.
+   */
+  async getOwnedIntentForLifecycle(intentId: string, userId: string): Promise<AuditIntentRecord | null> {
+    const intent = await this.getOwnedIntent(intentId, userId);
+    if (!intent || isExpiredIntent(intent) || isTerminalIntentStatus(intent.status)) {
       return null;
     }
 

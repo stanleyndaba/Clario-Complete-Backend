@@ -69,6 +69,23 @@ function isTenantExempt(path: string): boolean {
 }
 
 /**
+ * Lifecycle resolution is a read model. It must resolve the authenticated,
+ * membership-authorized tenant without changing a user's persisted activity.
+ */
+function normalizeRequestPath(path: string): string {
+    const withoutTrailingSlash = path.replace(/\/+$/, '');
+    return withoutTrailingSlash || '/';
+}
+
+function isSellerLifecycleReadPath(path: string): boolean {
+    return normalizeRequestPath(path) === '/api/seller-lifecycle';
+}
+
+function shouldPersistLastActiveTenant(path: string): boolean {
+    return !isSellerLifecycleReadPath(path);
+}
+
+/**
  * Extract tenant slug from URL path
  * Pattern: /app/:tenantSlug/*
  */
@@ -233,7 +250,8 @@ async function updateLastActiveTenant(userId: string, tenantId: string): Promise
  */
 export async function tenantMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-        const fullPath = req.originalUrl?.split('?')[0] || req.path;
+        const fullPath = normalizeRequestPath(req.originalUrl?.split('?')[0] || req.path);
+        const isSellerLifecycleRead = isSellerLifecycleReadPath(fullPath);
         const explicitDemoRequest = isExplicitDemoRequest(req);
         const explicitTenantSlug = getRequestedTenantSlug(req);
         const explicitTenantId = getExplicitTenantId(req);
@@ -285,7 +303,7 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
 
             membership = await getUserMembership(userId, tenant.id);
             if (!membership) {
-                if (explicitDemoRequest && isDemoTenant(tenant)) {
+                if (explicitDemoRequest && isDemoTenant(tenant) && !isSellerLifecycleRead) {
                     membership = await ensureDemoMembership(userId, tenant.id);
                 }
 
@@ -308,7 +326,7 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
 
             membership = await getUserMembership(userId, explicitTenantId);
             if (!membership) {
-                if (explicitDemoRequest && isDemoTenant(tenant)) {
+                if (explicitDemoRequest && isDemoTenant(tenant) && !isSellerLifecycleRead) {
                     membership = await ensureDemoMembership(userId, tenant.id);
                 }
 
@@ -331,7 +349,7 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
 
         // 4. Explicit demo fallback only
         if (!tenant && !explicitTenantSlug && !explicitTenantId) {
-            if (explicitDemoRequest) {
+            if (explicitDemoRequest && !isSellerLifecycleRead) {
                 const demoTenant = await getTenantBySlug(DEMO_TENANT_SLUG) || await getTenantById(DEFAULT_TENANT_ID);
                 if (demoTenant) {
                     membership = await ensureDemoMembership(userId, demoTenant.id);
@@ -363,7 +381,7 @@ export async function tenantMiddleware(req: Request, res: Response, next: NextFu
         } as TenantContext;
 
         // Update last active tenant (async, don't wait)
-        if (!isDemoTenant(tenant)) {
+        if (!isDemoTenant(tenant) && shouldPersistLastActiveTenant(fullPath)) {
             updateLastActiveTenant(userId, tenant.id).catch(err =>
                 logger.warn('Failed to update last active tenant', { error: err.message })
             );

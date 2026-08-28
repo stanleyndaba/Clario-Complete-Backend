@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import { supabase, supabaseAdmin, convertUserIdToUuid } from '../database/supabaseClient';
-import { extractRequestToken, resolveClerkPrimaryEmail, verifyAccessToken } from '../utils/authTokenVerifier';
+import { extractRequestToken, resolveClerkUserProfile, verifyAccessToken } from '../utils/authTokenVerifier';
 import { ensureAuthenticatedUserWorkspace } from '../services/userWorkspaceBootstrap';
 import { normalizeResolvedAmazonSellerId } from '../utils/sellerIdentity';
 import { welcomeEmailService } from '../services/welcomeEmailService';
@@ -109,9 +109,10 @@ router.post('/bootstrap', async (req, res) => {
     }
 
     const clerkUserId = decoded.source === 'clerk' ? decoded.clerkUserId || decoded.id : null;
-    const resolvedEmail = decoded.source === 'clerk'
-      ? await resolveClerkPrimaryEmail(clerkUserId || decoded.id)
-      : decoded.email || null;
+    const clerkProfile = decoded.source === 'clerk'
+      ? await resolveClerkUserProfile(clerkUserId || decoded.id)
+      : { email: decoded.email || null, firstName: null };
+    const resolvedEmail = clerkProfile.email;
 
     const result = await ensureAuthenticatedUserWorkspace({
       userId: decoded.id,
@@ -123,12 +124,24 @@ router.post('/bootstrap', async (req, res) => {
       authProvider: decoded.source
     });
 
+    let auditIntent: any = null;
+    const auditIntentId = typeof req.body?.auditIntentId === 'string' ? req.body.auditIntentId.trim() : '';
+    if (auditIntentId) {
+      auditIntent = await auditIntentService.attachIntent({
+        intentId: auditIntentId,
+        userId: result.userId,
+        tenantId: result.tenant.id,
+      });
+    }
+
     const welcomeEmailPayload = {
       userId: result.userId,
       email: result.email,
+      firstName: clerkProfile.firstName,
       tenantId: result.tenant.id,
       tenantName: result.tenant.name,
-      tenantSlug: result.tenant.slug
+      tenantSlug: result.tenant.slug,
+      suppressForAuditProgress: Boolean(auditIntent && ['attached', 'consumed'].includes(auditIntent.status))
     };
 
     if (shouldSendFreshWorkspaceWelcomeEmail(result)) {
@@ -137,16 +150,6 @@ router.post('/bootstrap', async (req, res) => {
       void welcomeEmailService.sendWorkspaceCreatedWelcomeEmailOnce({
         ...welcomeEmailPayload,
         retryFailedOnly: true
-      });
-    }
-
-    let auditIntent: any = null;
-    const auditIntentId = typeof req.body?.auditIntentId === 'string' ? req.body.auditIntentId.trim() : '';
-    if (auditIntentId) {
-      auditIntent = await auditIntentService.attachIntent({
-        intentId: auditIntentId,
-        userId: result.userId,
-        tenantId: result.tenant.id,
       });
     }
 

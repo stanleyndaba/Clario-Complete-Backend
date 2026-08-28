@@ -5,9 +5,16 @@ import logger from '../utils/logger';
 interface WorkspaceWelcomeEmailInput {
   userId: string;
   email: string | null;
+  firstName?: string | null;
   tenantId: string;
   tenantName?: string | null;
   tenantSlug?: string | null;
+  /**
+   * The seller began the Audit journey before account bootstrap. The welcome
+   * message would arrive after that journey has already started, so it must be
+   * suppressed in favour of the appropriate progress/result communication.
+   */
+  suppressForAuditProgress?: boolean;
   retryFailedOnly?: boolean;
 }
 
@@ -17,6 +24,7 @@ interface WelcomeSetupState {
 }
 
 const WELCOME_RETRY_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const MAX_FIRST_NAME_LENGTH = 80;
 
 function truncateError(value: unknown): string {
   const message = value instanceof Error ? value.message : String(value || 'welcome_email_failed');
@@ -32,6 +40,11 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#039;');
 }
 
+function normalizeFirstName(value: string | null | undefined): string | null {
+  const firstName = String(value || '').trim().replace(/\s+/g, ' ');
+  return firstName ? firstName.slice(0, MAX_FIRST_NAME_LENGTH) : null;
+}
+
 function isMissingWelcomeEmailSchema(error: any): boolean {
   const message = String(error?.message || '').toLowerCase();
   return (
@@ -45,44 +58,97 @@ function isMissingWelcomeEmailSchema(error: any): boolean {
   );
 }
 
+function getFrontendBaseUrl(): string {
+  return (process.env.FRONTEND_URL || 'https://app.margin-finance.com').replace(/\/+$/, '');
+}
+
 function buildAppUrl(tenantSlug?: string | null, path = ''): string {
-  const baseUrl = (process.env.FRONTEND_URL || 'https://app.margin-finance.com').replace(/\/+$/, '');
+  const baseUrl = getFrontendBaseUrl();
   if (tenantSlug) {
     return `${baseUrl}/app/${encodeURIComponent(tenantSlug)}${path}`;
   }
-  return `${baseUrl}/app`;
+  return `${baseUrl}/app${path}`;
+}
+
+function buildPublicUrl(path: string): string {
+  return `${getFrontendBaseUrl()}${path}`;
+}
+
+/**
+ * The welcome CTA must lead to the first usable authenticated Audit step. It
+ * deliberately starts with the seller's read-only Amazon connection rather
+ * than implying that a recovery has already been identified or authorized.
+ */
+export function buildAuditStartUrl(tenantSlug?: string | null): string {
+  return buildAppUrl(tenantSlug, '/connect-amazon');
+}
+
+export function shouldSuppressWelcomeEmailForAuditProgress(params: {
+  hasAttachedAuditIntent?: boolean;
+  hasStartedOrCompletedAudit?: boolean;
+}): boolean {
+  return params.hasAttachedAuditIntent === true || params.hasStartedOrCompletedAudit === true;
 }
 
 export function buildWelcomeEmail(
   input: WorkspaceWelcomeEmailInput,
-  setupState: WelcomeSetupState
+  _setupState: WelcomeSetupState
 ): { subject: string; html: string; text: string } {
-  const subject = 'Welcome to Margin';
-  const intro = 'Your Recovery Audit is ready.';
-  
+  const subject = 'Welcome to Margin — your free Recovery Audit is ready';
+  const preheader = 'You do not need to have it all figured out. Start with a clear view of what Amazon’s records say.';
+  const firstName = normalizeFirstName(input.firstName);
+  const greeting = firstName ? `Welcome to Margin, ${firstName}.` : 'Welcome to Margin.';
+  const auditStartUrl = buildAuditStartUrl(input.tenantSlug);
+  const logoUrl = buildPublicUrl('/logoimagetwo.png');
+  const privacyUrl = buildPublicUrl('/privacy');
+  const termsUrl = buildPublicUrl('/terms');
+
   const text = [
-    'Welcome to Margin',
-    '=================',
+    'Margin',
     '',
-    'Your account is ready.',
+    greeting,
     '',
-    'Next, connect your Amazon seller account and run your free Recovery Audit.',
+    'Thank you for taking the first step with us.',
     '',
-    'Margin will review your shipment, inventory, reimbursement, fee, and settlement activity and show you what may require attention.',
+    'Amazon recovery work is easy to put off. A reimbursement may not make sense, an inventory event may be hard to explain, or the work may simply keep landing back on your plate. You do not need to know exactly what is wrong—or have every document ready—before you begin.',
     '',
-    'What happens next',
-    '- Connect Amazon.',
-    '- Run your Recovery Audit.',
-    '- Review your results.',
+    'Your free Recovery Audit is where we start.',
     '',
-    'You do not need to upload reports or documents yet. Margin will tell you when additional evidence is needed.',
+    'Margin will help you see what does not add up, what supports it, and what needs your decision next.',
     '',
-    'The audit is read-only, and nothing is filed without your approval.',
+    'Run your free Recovery Audit',
+    auditStartUrl,
     '',
-    'Questions? Reply to this email and we will help.',
+    'Read-only access · No payment to run the Audit · Nothing is submitted without your approval',
     '',
-    'Margin Team',
-    'support@margin-finance.com'
+    'Here is how we will get you started',
+    '',
+    '1. Connect Amazon',
+    'Use the Audit flow to connect your seller account. Margin starts with the relevant records, using read-only access.',
+    '',
+    '2. Get a clear view',
+    'Margin checks the applicable source data and shows what is supported, settled, missing, or needs more evidence.',
+    '',
+    '3. Decide with the facts in front of you',
+    'You can see what was found, the proof behind it, what needs your approval, and—where applicable—what happened to the money.',
+    '',
+    'You stay in control at every meaningful step. Margin is here to make the recovery work clearer and easier to carry—not to hand you another confusing dashboard or ask you to figure it out alone.',
+    '',
+    'If anything feels unclear, reply to this email. Whether you need help connecting or want to understand what your Audit is showing, we will point you to the right next step.',
+    '',
+    'We are glad you are here.',
+    '',
+    'The Margin Team',
+    'Support: support@margin-finance.com',
+    '',
+    'Margin',
+    'Clear recovery work. You stay in control.',
+    '',
+    'Questions about your account or Audit? Reply to this email or contact support@margin-finance.com.',
+    '',
+    '© 2026 Margin. All rights reserved.',
+    `Privacy: ${privacyUrl}`,
+    `Terms: ${termsUrl}`
   ].join('\n');
 
   const html = `
@@ -94,59 +160,61 @@ export function buildWelcomeEmail(
         <title>${escapeHtml(subject)}</title>
       </head>
       <body style="margin:0; padding:0; background:#ffffff; color:#171717; font-family:Arial, Helvetica, sans-serif;">
-        <div style="display:none; max-height:0; overflow:hidden; opacity:0;">
-          ${escapeHtml(intro)}
+        <div style="display:none; max-height:0; overflow:hidden; opacity:0; color:transparent;">
+          ${escapeHtml(preheader)}
         </div>
         <div style="max-width:600px; margin:0 auto; padding:36px 24px 40px 24px;">
           <div style="border-bottom:1px solid #e5e5e5; padding-bottom:20px;">
-            <div style="font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#111827; font-weight:700;">
-              Margin
-            </div>
-            <h1 style="margin:28px 0 0 0; font-size:28px; line-height:1.18; font-weight:600; color:#111827;">
-              Welcome to Margin
+            <a href="${escapeHtml(getFrontendBaseUrl())}" style="display:inline-flex; align-items:center; color:#182026; text-decoration:none;" aria-label="Margin home">
+              <img src="${escapeHtml(logoUrl)}" alt="Margin" width="24" height="24" style="display:block; width:24px; height:24px; margin-right:10px; object-fit:contain;" />
+              <span style="font-family:Merriweather, Georgia, 'Times New Roman', serif; font-size:20px; font-weight:700; letter-spacing:-0.02em; line-height:24px;">Margin</span>
+            </a>
+            <h1 style="margin:28px 0 0 0; font-family:Merriweather, Georgia, 'Times New Roman', serif; font-size:29px; line-height:1.24; font-weight:600; letter-spacing:-0.02em; color:#111827;">
+              ${escapeHtml(greeting)}
             </h1>
           </div>
 
           <div style="padding-top:24px;">
-            <p style="margin:0; color:#262626; font-size:15px; line-height:1.8;">
-              Your account is ready.
-            </p>
+            <p style="margin:0; color:#262626; font-size:15px; line-height:1.8;">Thank you for taking the first step with us.</p>
 
-            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Next, connect your Amazon seller account and run your free Recovery Audit.
-            </p>
-            
-            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Margin will review your shipment, inventory, reimbursement, fee, and settlement activity and show you what may require attention.
-            </p>
+            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">Amazon recovery work is easy to put off. A reimbursement may not make sense, an inventory event may be hard to explain, or the work may simply keep landing back on your plate. You do not need to know exactly what is wrong—or have every document ready—before you begin.</p>
 
-            <div style="margin-top:24px; padding-top:20px; border-top:1px solid #eeeeee;">
-              <p style="margin:0; color:#111827; font-size:14px; line-height:1.7; font-weight:600;">
-                What happens next
-              </p>
-              <ol style="margin:12px 0 0 20px; padding:0; color:#333333; font-size:14px; line-height:1.8;">
-                <li style="margin-bottom:8px;">Connect Amazon.</li>
-                <li style="margin-bottom:8px;">Run your Recovery Audit.</li>
-                <li>Review your results.</li>
+            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">Your free Recovery Audit is where we start.</p>
+
+            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">Margin will help you see what does not add up, what supports it, and what needs your decision next.</p>
+
+            <div style="margin:28px 0 0 0;">
+              <a href="${escapeHtml(auditStartUrl)}" style="display:inline-block; border-radius:8px; background:#0b74de; color:#ffffff; font-size:15px; font-weight:700; line-height:1.2; padding:15px 22px; text-decoration:none;">Run your free Recovery Audit</a>
+            </div>
+            <p style="margin:12px 0 0 0; color:#5f6773; font-size:12px; line-height:1.7;">Read-only access &middot; No payment to run the Audit &middot; Nothing is submitted without your approval</p>
+
+            <div style="margin-top:28px; padding-top:22px; border-top:1px solid #eeeeee;">
+              <p style="margin:0; color:#111827; font-size:14px; line-height:1.7; font-weight:700;">Here is how we will get you started</p>
+              <ol style="margin:15px 0 0 20px; padding:0; color:#262626; font-size:15px; line-height:1.75;">
+                <li style="margin:0 0 14px 0;"><strong>Connect Amazon</strong><br />Use the Audit flow to connect your seller account. Margin starts with the relevant records, using read-only access.</li>
+                <li style="margin:0 0 14px 0;"><strong>Get a clear view</strong><br />Margin checks the applicable source data and shows what is supported, settled, missing, or needs more evidence.</li>
+                <li><strong>Decide with the facts in front of you</strong><br />You can see what was found, the proof behind it, what needs your approval, and—where applicable—what happened to the money.</li>
               </ol>
             </div>
 
-            <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              You do not need to upload reports or documents yet. Margin will tell you when additional evidence is needed.
-            </p>
-            
-            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              The audit is read-only, and nothing is filed without your approval.
-            </p>
+            <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">You stay in control at every meaningful step. Margin is here to make the recovery work clearer and easier to carry—not to hand you another confusing dashboard or ask you to figure it out alone.</p>
 
-            <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">
-              Questions? Reply to this email and we will help.
-            </p>
+            <p style="margin:18px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">If anything feels unclear, reply to this email. Whether you need help connecting or want to understand what your Audit is showing, we will point you to the right next step.</p>
 
-            <div style="margin:28px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
-              <div>Margin Team</div>
-              <div style="color:#666666; font-size:14px;">support@margin-finance.com</div>
+            <p style="margin:24px 0 0 0; color:#262626; font-size:15px; line-height:1.8;">We are glad you are here.</p>
+
+            <div style="margin:24px 0 0 0; color:#171717; font-size:15px; line-height:1.7;">
+              <div>The Margin Team</div>
+              <div style="color:#666666; font-size:14px;">Support: support@margin-finance.com</div>
             </div>
+          </div>
+
+          <div style="margin-top:34px; padding-top:22px; border-top:1px solid #e5e5e5; color:#646b75; font-size:12px; line-height:1.7;">
+            <div style="font-family:Merriweather, Georgia, 'Times New Roman', serif; color:#182026; font-size:15px; font-weight:700; letter-spacing:-0.015em;">Margin</div>
+            <div style="margin-top:3px;">Clear recovery work. You stay in control.</div>
+            <div style="margin-top:14px;">Questions about your account or Audit? Reply to this email or contact <a href="mailto:support@margin-finance.com" style="color:#365b88; text-decoration:underline;">support@margin-finance.com</a>.</div>
+            <div style="margin-top:14px;">© 2026 Margin. All rights reserved.</div>
+            <div style="margin-top:6px;"><a href="${escapeHtml(privacyUrl)}" style="color:#365b88; text-decoration:underline;">Privacy</a><span style="color:#a1a6ad;"> &middot; </span><a href="${escapeHtml(termsUrl)}" style="color:#365b88; text-decoration:underline;">Terms</a></div>
           </div>
         </div>
       </body>
@@ -184,6 +252,22 @@ class WelcomeEmailService {
     return { amazonConnected: tokenIsUsable, reliable: true };
   }
 
+  private async hasStartedOrCompletedAudit(userId: string, tenantId: string): Promise<boolean> {
+    const { data, error } = await supabaseAdmin
+      .from('audit_runs')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('tenant_id', tenantId)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`WELCOME_EMAIL_AUDIT_STATE_LOOKUP_FAILED:${error.message}`);
+    }
+
+    return Boolean(data?.id);
+  }
+
   async sendWorkspaceCreatedWelcomeEmailOnce(input: WorkspaceWelcomeEmailInput): Promise<void> {
     const email = input.email?.trim().toLowerCase();
     if (!input.userId || !email) {
@@ -216,11 +300,28 @@ class WelcomeEmailService {
         return;
       }
 
+      if (input.suppressForAuditProgress) {
+        logger.info('[WELCOME EMAIL] Skipping welcome email because the seller has already entered the Audit journey', {
+          userId: input.userId,
+          tenantId: input.tenantId
+        });
+        return;
+      }
+
       if (user.welcome_email_attempted_at) {
         const lastAttempt = new Date(user.welcome_email_attempted_at).getTime();
         if (!Number.isNaN(lastAttempt) && now.getTime() - lastAttempt < WELCOME_RETRY_INTERVAL_MS) {
           return;
         }
+      }
+
+      const hasAuditProgress = await this.hasStartedOrCompletedAudit(input.userId, input.tenantId);
+      if (shouldSuppressWelcomeEmailForAuditProgress({ hasStartedOrCompletedAudit: hasAuditProgress })) {
+        logger.info('[WELCOME EMAIL] Skipping welcome email because the seller already has Audit progress', {
+          userId: input.userId,
+          tenantId: input.tenantId
+        });
+        return;
       }
 
       const attemptedAt = now.toISOString();
