@@ -19,6 +19,8 @@ import {
   initializePaystackTransaction,
   verifyPaystackTransaction,
 } from './paystackService';
+import { notifyRecoverOnceActivated } from './recoverOnceCustomerNotificationService';
+import logger from '../utils/logger';
 
 type QuoteStatus =
   | 'available'
@@ -435,8 +437,9 @@ class RecoverOnceService {
         audit_run_id: quote.audit_run_id,
         quote_id: quote.id,
         payment_id: payment.id,
-        status: 'active',
+        status: 'preparing',
         scope_snapshot: quote.scope_snapshot,
+        preparation_started_at: new Date().toISOString(),
       })
       .select('*')
       .single();
@@ -495,6 +498,23 @@ class RecoverOnceService {
     if (error || !paidQuote) throw new Error(`Failed to mark Recover Once quote paid: ${error?.message || 'Unknown error'}`);
 
     const engagement = await this.createEngagement(paidQuote, paidPayment);
+    try {
+      await notifyRecoverOnceActivated({
+        engagementId: engagement.id,
+        userId: quote.user_id,
+        tenantId: quote.tenant_id,
+      });
+      await supabaseAdmin
+        .from('recover_once_engagements')
+        .update({ last_customer_notified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', engagement.id);
+    } catch (notificationError: any) {
+      logger.warn('[RECOVER_ONCE] Customer lifecycle email failed after verified payment', {
+        engagementId: engagement.id,
+        error: notificationError?.message || notificationError,
+      });
+    }
+
     return {
       success: true,
       payment: toCustomerSafePayment(paidPayment),
@@ -503,6 +523,43 @@ class RecoverOnceService {
         id: engagement.id,
         status: engagement.status,
         audit_run_id: engagement.audit_run_id,
+        preparation_started_at: engagement.preparation_started_at || engagement.started_at || null,
+        ready_for_review_at: engagement.ready_for_review_at || null,
+        seller_approved_at: engagement.seller_approved_at || null,
+        exception_reason: engagement.exception_reason || null,
+      },
+    };
+  }
+
+  async getEngagement(input: { engagementId: string; userId: string; tenantId?: string | null }) {
+    const { data, error } = await supabaseAdmin
+      .from('recover_once_engagements')
+      .select('id, tenant_id, user_id, audit_run_id, quote_id, status, scope_snapshot, started_at, preparation_started_at, ready_for_review_at, seller_approved_at, completed_at, exception_reason, created_at, updated_at')
+      .eq('id', input.engagementId)
+      .eq('user_id', convertUserIdToUuid(input.userId))
+      .maybeSingle();
+
+    if (error) throw new Error(`Failed to load Recover Once engagement: ${error.message}`);
+    if (!data || (input.tenantId && data.tenant_id !== input.tenantId)) {
+      return { success: false, status: 404, message: 'Recover Once engagement not found' };
+    }
+
+    return {
+      success: true,
+      engagement: {
+        id: data.id,
+        status: data.status,
+        audit_run_id: data.audit_run_id,
+        quote_id: data.quote_id,
+        scope_snapshot: data.scope_snapshot,
+        started_at: data.started_at,
+        preparation_started_at: data.preparation_started_at || data.started_at,
+        ready_for_review_at: data.ready_for_review_at || null,
+        seller_approved_at: data.seller_approved_at || null,
+        completed_at: data.completed_at || null,
+        exception_reason: data.exception_reason || null,
+        created_at: data.created_at,
+        updated_at: data.updated_at,
       },
     };
   }

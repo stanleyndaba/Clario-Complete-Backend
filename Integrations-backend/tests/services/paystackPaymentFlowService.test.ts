@@ -42,7 +42,7 @@ describe('paystackPaymentFlowService workspace status', () => {
 
     expect(status).toEqual({
       product: {
-        key: 'recovery_workspace_activation',
+        key: 'recovery_workspace_monthly',
         name: 'Recovery Workspace',
         amount_subunits: 179900,
         currency: 'ZAR',

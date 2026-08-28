@@ -40,7 +40,9 @@ import {
   verifyPaystackTransaction,
 } from './paystackService';
 import { applyVerifiedPaystackActivation } from './paymentActivationService';
+import { notifyWorkspaceActivated } from './workspaceCustomerNotificationService';
 import workspaceEntitlementService from './workspaceEntitlementService';
+import logger from '../utils/logger';
 
 const PRODUCT = RECOVERY_WORKSPACE_MONTHLY_PRODUCT;
 let cachedPlan: { planCode: string; expiresAt: number } | null = null;
@@ -461,6 +463,20 @@ class PaystackSubscriptionService {
       : null;
     const reconciled = providerReconciled ? await activateIfReady(providerReconciled) : null;
     const { entitlement } = await workspaceEntitlementService.getTenantEntitlement(payment.tenant_id);
+    if (entitlement.entitled) {
+      try {
+        await notifyWorkspaceActivated({
+          paymentReference: input.reference,
+          userId: payment.user_id,
+          tenantId: payment.tenant_id,
+        });
+      } catch (notificationError: any) {
+        logger.warn('[WORKSPACE] Customer activation email failed after verified payment', {
+          paymentReference: input.reference,
+          error: notificationError?.message || notificationError,
+        });
+      }
+    }
 
     return {
       success: true,

@@ -166,6 +166,36 @@ router.post('/recover-once/checkout/initialize', authenticateToken, async (req: 
   }
 });
 
+router.get('/recover-once/engagements/:engagementId', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const user = getUser(req);
+    if (!user.id) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const engagementId = String(req.params.engagementId || '').trim();
+    if (!engagementId) {
+      return res.status(400).json({ success: false, message: 'engagementId is required' });
+    }
+
+    const result = await recoverOnceService.getEngagement({
+      engagementId,
+      userId: user.id,
+      tenantId: getTenantId(req),
+    });
+
+    if (!result.success && (result as any).status) {
+      return res.status((result as any).status).json(result);
+    }
+
+    return res.json(result);
+  } catch (error: any) {
+    const message = error?.message || 'Failed to load Recover Once engagement';
+    const status = /not found/i.test(message) ? 404 : /required|membership/i.test(message) ? 400 : 500;
+    return res.status(status).json({ success: false, message });
+  }
+});
+
 router.get('/recover-once/verify/:reference', authenticateToken, async (req: Request, res: Response) => {
   try {
     const user = getUser(req);
