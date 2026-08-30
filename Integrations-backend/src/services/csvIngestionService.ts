@@ -2827,7 +2827,7 @@ export class CSVIngestionService {
                         referenceType: classification.referenceType || 'settlement',
                         settlementId,
                         payoutBatchId: settlementId,
-                        amazonEventId: `csv_settlement:${settlementId}:${classification.eventType}:${transactionType}`,
+                        amazonEventId: `csv_settlement:${settlementId}:${classification.eventType}:${transactionType}:${getField(r, 'AmazonOrderId', 'order_id', 'orderId') || ''}:${getField(r, 'SellerSKU', 'seller_sku', 'sku', 'SKU') || ''}:${getField(r, 'FNSKU', 'fnsku', 'FulfillmentNetworkSKU', 'fulfillmentNetworkSku') || ''}:${amount}:${i + 1}`,
                         amazonOrderId: getField(r, 'AmazonOrderId', 'order_id', 'orderId') || null,
                         amazonSku: getField(r, 'SellerSKU', 'seller_sku', 'sku', 'SKU') || null,
                         sku: getField(r, 'SellerSKU', 'seller_sku', 'sku', 'SKU') || null,
@@ -3146,7 +3146,7 @@ export class CSVIngestionService {
             'inventory_ledger',
             errors,
             skipped,
-            `inventory_ledger_events upsert (${Object.keys(balanceByFnsku).length} calculated snapshots included)`,
+            `inventory_ledger_events insert (${Object.keys(balanceByFnsku).length} calculated snapshots included)`,
         );
 
         logger.info('📊 [CSV INGESTION] Inventory ledger events written', {
@@ -3372,9 +3372,12 @@ export class CSVIngestionService {
         orders: 'tenant_id,user_id,order_id',
         shipments: 'tenant_id,user_id,shipment_id',
         returns: 'tenant_id,user_id,return_id',
-        settlements: 'tenant_id,user_id,settlement_id,transaction_type',
+        settlements: 'tenant_id,user_id,store_id,settlement_id,transaction_type',
         inventory_items: 'tenant_id,user_id,sku,asin,fnsku',
-        inventory_ledger_events: 'tenant_id,user_id,fnsku,event_type,event_date,reference_id',
+        // The deployed ledger uniqueness is a partial index on provider_row_fingerprint IS NULL,
+        // which PostgreSQL cannot infer from a plain ON CONFLICT target. Manual ledger rows
+        // therefore use the file-level duplicate guard plus a plain insert.
+
         financial_events: 'tenant_id,seller_id,source,amazon_event_id',
         inventory_transfers: 'tenant_id,seller_id,transfer_id',
         // Other tables (orders, shipments, returns, settlements, inventory_items, financial_events)
