@@ -19,7 +19,7 @@ describe('manual-audit Amazon report-family detection', () => {
 
   test('fails closed when a schema matches multiple families', () => {
     expect(() => detectCSVType(
-      ['SettlementId', 'TransactionType', 'EventType', 'PostedDate', 'Amount', 'Description'],
+      ['EventType', 'PostedDate', 'Amount', 'Description', 'FeeType', 'FeeAmount'],
       'ambiguous.csv',
     )).toThrow(/Ambiguous CSV type/);
   });

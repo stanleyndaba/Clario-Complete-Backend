@@ -245,27 +245,25 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
     inventory: [
         ['sellerSku', 'availableQuantity'],
         ['seller-sku', 'available'],
-        ['FNSKU', 'ASIN', 'Event Type'],
         ['FNSKU', 'MSKU', 'Quantity'],
         ['Date', 'FNSKU', 'ASIN', 'MSKU'],
         ['AdjustmentDate', 'FNSKU', 'ASIN'],
         ['EventDate', 'FNSKU', 'ASIN'],
-        ['fnsku', 'asin', 'event type'],
         ['fnsku', 'disposition', 'fulfillment center'],
     ],
     financial_events: [
         // Canonical/internal aliases.
         ['EventType', 'PostedDate', 'Amount', 'Description'],
-        ['event_type', 'posted_date', 'amount'],
         ['event_type', 'event_date', 'amount'],
-        ['eventType', 'postedDate', 'amount'],
+        ['EventType', 'PostedDate', 'Amount'],
+        ['eventType', 'postedDate', 'amount', 'Description'],
         // Amazon Financial Events / adjustment export variants.
         ['AdjustmentEventId', 'PostedDate'],
         ['OriginalRemovalOrderId', 'LiquidationProceedsAmount'],
         ['amazon-order-id', 'posted-date', 'transaction-type', 'amount'],
         ['amazon_order_id', 'posted_date', 'transaction_type', 'amount'],
-        ['event-type', 'posted-date', 'amount'],
-        ['event_type', 'posted-date', 'amount'],
+        ['event-type', 'posted-date', 'amount', 'description'],
+        ['event_type', 'posted-date', 'amount', 'description'],
         ['event-id', 'posted-date', 'amount'],
     ],
     fees: [
@@ -273,6 +271,10 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['fee_type', 'fee_amount'],
         ['feeType', 'feeAmount'],
         ['FeeType', 'PostedDate'],
+        // Common normalized manual fee export: the reference column separates
+        // it from a generic financial-event report with the same amount/date.
+        ['EventType', 'PostedDate', 'Amount', 'CurrencyCode', 'Reference ID'],
+        ['event_type', 'posted_date', 'amount', 'currency_code', 'reference_id'],
     ],
     transfers: [
         ['transfer_id', 'sku', 'quantity_sent', 'quantity_received', 'transfer_date'],
@@ -302,6 +304,20 @@ export function detectCSVType(headers: string[], fileName: string = ''): CSVType
         if (hasMatchingSignature) {
             matchedTypes.add(csvType as CSVType);
         }
+    }
+
+    // The manual fee export also carries EventType/PostedDate/Amount, which is
+    // valid for the minimal financial-event fallback. CurrencyCode + Reference
+    // ID are the deliberate fee discriminators in that schema.
+    if (matchedTypes.has('settlements') && matchedTypes.has('financial_events')) {
+        const normalizedHeaders = new Set(headers.map(h => h.toLowerCase().replace(/[_\- ]/g, '')));
+        if (normalizedHeaders.has('settlementid')) matchedTypes.delete('financial_events');
+    }
+
+    if (matchedTypes.has('financial_events') && matchedTypes.has('fees')) {
+        const normalizedHeaders = new Set(headers.map(h => h.toLowerCase().replace(/[_\- ]/g, '')));
+        const isFeeShape = normalizedHeaders.has('currencycode') && normalizedHeaders.has('referenceid');
+        if (isFeeShape) matchedTypes.delete('financial_events');
     }
 
     if (matchedTypes.size > 1) {

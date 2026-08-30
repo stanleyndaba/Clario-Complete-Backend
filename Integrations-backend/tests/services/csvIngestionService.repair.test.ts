@@ -745,8 +745,8 @@ describe('CSV ingestion repair', () => {
 
   it('rejects a schema that matches multiple report families rather than choosing by filename or priority', async () => {
     const ambiguousCsv = [
-      'SettlementId,TransactionType,EventType,PostedDate,Amount,Description',
-      'SET-1,reimbursement,AdjustmentEvent,2026-03-18T00:00:00Z,4.20,ambiguous source family',
+      'EventType,PostedDate,Amount,Description,FeeType,FeeAmount',
+      'AdjustmentEvent,2026-03-18T00:00:00Z,4.20,ambiguous source family,ReferralFee,4.20',
     ].join('\n');
     const result = await service.ingestFiles(
       userId,
