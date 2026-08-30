@@ -1466,13 +1466,32 @@ export async function storeFeeDetectionResults(results: FeeDetectionResult[]): P
         updated_at: new Date().toISOString(),
     }));
 
-    const { data, error } = await supabaseAdmin
+    let { data, error } = await supabaseAdmin
         .from('detection_results')
         .upsert(records, {
             onConflict: 'tenant_id,seller_id,sync_id,anomaly_type,finding_fingerprint',
             ignoreDuplicates: false,
         })
         .select('id, anomaly_type');
+
+    // Migration 135 is not present in the current production schema. Preserve
+    // fingerprint idempotency where available, but do not dead-end the entire
+    // detection pipeline when an older schema rejects that optional column.
+    if (error?.code === '42703' && /finding_fingerprint/i.test(error.message || '')) {
+        const legacyRecords = records.map(({ finding_fingerprint: _findingFingerprint, ...record }) => record);
+        logger.warn('⚠️ [FEE] Detection-results fingerprint column unavailable; using legacy insert compatibility path', {
+            sellerId: results[0].seller_id,
+            syncId: results[0].sync_id,
+            attemptedCount: legacyRecords.length,
+            error: error.message,
+            code: error.code,
+            migration: '135_add_fee_detection_result_idempotency',
+        });
+        ({ data, error } = await supabaseAdmin
+            .from('detection_results')
+            .insert(legacyRecords)
+            .select('id, anomaly_type'));
+    }
 
     if (error) {
         const message = `Fee detection persistence failed: ${error.message}`;
