@@ -718,6 +718,15 @@ function classifyCsvInputIssue(errors: unknown): CsvInputIssue | undefined {
     return undefined;
 }
 
+function ensurePersistenceDiagnostics(result: IngestionResult): IngestionResult {
+    return {
+        ...result,
+        persistenceStatus: result.persistenceStatus || (result.rowsInserted > 0 ? 'succeeded' : 'not_attempted'),
+        persistenceError: result.persistenceError,
+        persistenceOperations: result.persistenceOperations || [],
+    };
+}
+
 export type CsvSubmissionDisposition = 'new' | 'mixed' | 'duplicate_reused';
 
 export type ManualTemporalCoverageStatus = 'available' | 'partial' | 'unavailable';
@@ -732,6 +741,21 @@ export interface ManualFileTemporalEvidence {
     reason?: string;
 }
 
+export type PersistenceStatus = 'not_attempted' | 'succeeded' | 'partial' | 'failed';
+
+export interface PersistenceOperationDiagnostic {
+    table: string;
+    operation: string;
+    status: 'succeeded' | 'failed';
+    batch?: number;
+    rows?: number;
+    errorCode?: string;
+    message?: string;
+    details?: string;
+    hint?: string;
+    metadata?: Record<string, unknown>;
+}
+
 export interface IngestionResult {
     success: boolean;
     csvType: CSVType;
@@ -742,6 +766,9 @@ export interface IngestionResult {
     rowsFailed: number;
     errors: string[];
     inputIssue?: CsvInputIssue;
+    persistenceStatus?: PersistenceStatus;
+    persistenceError?: string;
+    persistenceOperations?: PersistenceOperationDiagnostic[];
     duplicateOfSyncId?: string;
     warnings?: string[];
     temporalEvidence?: ManualFileTemporalEvidence;
@@ -774,6 +801,9 @@ export interface CsvUploadRunFileSummary {
     rowsFailed?: number;
     errors?: string[];
     inputIssue?: CsvInputIssue;
+    persistenceStatus?: PersistenceStatus;
+    persistenceError?: string;
+    persistenceOperations?: PersistenceOperationDiagnostic[];
     duplicateOfSyncId?: string;
     warnings?: string[];
     temporalEvidence?: ManualFileTemporalEvidence;
@@ -1201,18 +1231,22 @@ export class CSVIngestionService {
             }
         }
 
+        // Normalize every file result before persisting the run or triggering detection.
+        // This guarantees diagnostics are present for validation, runtime, and DB failures.
+        const diagnosticResults = results.map(ensurePersistenceDiagnostics);
+
         // Trigger detection after all files are imported
         let detectionJobId: string | undefined;
         let detectionError: string | null = null;
-        const anySuccess = results.some(r => r.success && r.rowsInserted > 0);
-        const allSucceeded = results.length > 0 && results.every(r => r.success);
+        const anySuccess = diagnosticResults.some(r => r.success && r.rowsInserted > 0);
+        const allSucceeded = diagnosticResults.length > 0 && diagnosticResults.every(r => r.success);
 
         if (triggerDetection && anySuccess) {
             try {
                 await this.persistCsvUploadRunRecord(tenantId, userId, syncId, {
                     success: allSucceeded,
                     fileCount: receivedFiles.length,
-                    filesSummary: this.buildCsvRunFilesSummary(results),
+                    filesSummary: this.buildCsvRunFilesSummary(diagnosticResults),
                     startedAt: runStartedAt,
                     status: 'detection_processing',
                     detectionTriggered: true,
@@ -1248,7 +1282,7 @@ export class CSVIngestionService {
 
         const detectionTriggered = !!detectionJobId;
         const detectionAttempted = triggerDetection && anySuccess;
-        const unifiedResults = results.map(result => {
+        const unifiedResults = diagnosticResults.map(result => {
             if (!result.success || result.rowsInserted <= 0) {
                 return {
                     ...result,
@@ -1456,6 +1490,9 @@ export class CSVIngestionService {
             rowsFailed: result.rowsFailed,
             errors: result.errors || [],
             inputIssue: result.inputIssue || classifyCsvInputIssue(result.errors),
+            persistenceStatus: result.persistenceStatus || 'not_attempted',
+            persistenceError: result.persistenceError,
+            persistenceOperations: result.persistenceOperations,
             duplicateOfSyncId: result.duplicateOfSyncId,
             warnings: result.warnings || [],
             temporalEvidence: result.temporalEvidence,
@@ -1505,6 +1542,11 @@ export class CSVIngestionService {
                 inputIssue: ['empty', 'malformed', 'ambiguous', 'unsupported', 'missing_required', 'invalid_value', 'prohibited'].includes(String(entry.inputIssue))
                     ? entry.inputIssue as CsvInputIssue
                     : classifyCsvInputIssue(entry.errors),
+                persistenceStatus: ['not_attempted', 'succeeded', 'partial', 'failed'].includes(String(entry.persistenceStatus))
+                    ? entry.persistenceStatus as PersistenceStatus
+                    : 'not_attempted',
+                persistenceError: typeof entry.persistenceError === 'string' ? entry.persistenceError : undefined,
+                persistenceOperations: Array.isArray(entry.persistenceOperations) ? entry.persistenceOperations : undefined,
                 duplicateOfSyncId: typeof entry.duplicateOfSyncId === 'string' ? entry.duplicateOfSyncId : undefined,
                 warnings: Array.isArray(entry.warnings) ? entry.warnings.map((value: unknown) => String(value)) : [],
                 temporalEvidence: normalizeManualFileTemporalEvidence(entry.temporalEvidence),
@@ -1529,6 +1571,9 @@ export class CSVIngestionService {
             rowsFailed: Number(entry.rowsFailed || 0),
             errors: entry.errors || [],
             inputIssue: entry.inputIssue || classifyCsvInputIssue(entry.errors),
+            persistenceStatus: entry.persistenceStatus || 'not_attempted',
+            persistenceError: entry.persistenceError,
+            persistenceOperations: entry.persistenceOperations,
             duplicateOfSyncId: entry.duplicateOfSyncId,
             temporalEvidence: entry.temporalEvidence,
             detectionTriggered: !!entry.detectionTriggered,
@@ -2803,8 +2848,17 @@ export class CSVIngestionService {
             }
         }
 
-        const settlementResult = await this.batchUpsert('settlements', rows, 'settlements', errors, skipped);
-        const financialResult = await this.batchUpsert('financial_events', financialRows, 'settlement_financial_events', errors, 0);
+        const settlementResult = await this.batchUpsert('settlements', rows, 'settlements', errors, skipped, 'settlements insert/upsert');
+        const financialResult = await this.batchUpsert('financial_events', financialRows, 'settlement_financial_events', errors, 0, 'financial_events insert/upsert');
+        const persistenceOperations = [
+            ...(settlementResult.persistenceOperations || []),
+            ...(financialResult.persistenceOperations || []),
+        ];
+        const persistenceStatus: PersistenceStatus = settlementResult.persistenceStatus === 'failed' || financialResult.persistenceStatus === 'failed'
+            ? (settlementResult.persistenceStatus === 'succeeded' || financialResult.persistenceStatus === 'succeeded' ? 'partial' : 'failed')
+            : settlementResult.persistenceStatus === 'not_attempted' && financialResult.persistenceStatus === 'not_attempted'
+                ? 'not_attempted'
+                : 'succeeded';
 
         return {
             success: settlementResult.success && financialResult.success,
@@ -2814,6 +2868,9 @@ export class CSVIngestionService {
             rowsSkipped: settlementResult.rowsSkipped,
             rowsFailed: settlementResult.rowsFailed + financialResult.rowsFailed,
             errors,
+            persistenceStatus,
+            persistenceError: persistenceOperations.find((entry) => entry.status === 'failed')?.message,
+            persistenceOperations,
             detectionTriggered: false,
         };
     }
@@ -3083,7 +3140,14 @@ export class CSVIngestionService {
         }
 
         // Insert into inventory_ledger_events table
-        const result = await this.batchUpsert('inventory_ledger_events', ledgerRows, 'inventory_ledger', errors, skipped);
+        const result = await this.batchUpsert(
+            'inventory_ledger_events',
+            ledgerRows,
+            'inventory_ledger',
+            errors,
+            skipped,
+            `inventory_ledger_events upsert (${Object.keys(balanceByFnsku).length} calculated snapshots included)`,
+        );
 
         logger.info('📊 [CSV INGESTION] Inventory ledger events written', {
             userId,
@@ -3098,6 +3162,8 @@ export class CSVIngestionService {
             ...result,
             csvType: 'inventory',
             rowsProcessed: records.length,
+            persistenceError: result.persistenceError,
+            persistenceOperations: result.persistenceOperations,
         };
     }
 
@@ -3324,10 +3390,12 @@ export class CSVIngestionService {
         rows: any[],
         csvType: string,
         accumulatedErrors: string[],
-        skipped = 0
+        skipped = 0,
+        operation = 'upsert'
     ): Promise<Omit<IngestionResult, 'fileName'>> {
         let inserted = 0;
         let failed = 0;
+        const persistenceOperations: PersistenceOperationDiagnostic[] = [];
         const BATCH_SIZE = 500;
         const conflictKey = CSVIngestionService.CONFLICT_KEYS[table];
 
@@ -3352,12 +3420,29 @@ export class CSVIngestionService {
                             error.hint ||
                             JSON.stringify(error);
                         const isRetriable = !error.code && errorMessage.includes('fetch failed');
-                        logger.error(`❌ [CSV INGESTION] Batch upsert failed for ${table}`, {
-                            error: errorMessage,
-                            code: error.code,
-                            batchStart: i,
+                        const diagnostic: PersistenceOperationDiagnostic = {
+                            table,
+                            operation,
+                            status: 'failed',
+                            batch: Math.floor(i / BATCH_SIZE) + 1,
+                            rows: batch.length,
+                            errorCode: error.code,
+                            message: error.message,
+                            details: error.details,
+                            hint: error.hint,
+                        };
+                        persistenceOperations.push(diagnostic);
+                        logger.error(`❌ [CSV INGESTION] Database write failed`, {
+                            stage: 'persistence',
+                            table,
+                            operation,
+                            errorCode: error.code,
+                            message: error.message,
+                            details: error.details,
+                            hint: error.hint,
+                            batch: diagnostic.batch,
                             batchSize: batch.length,
-                            conflictKey: conflictKey || 'none (plain insert)',
+                            conflictKey: conflictKey || null,
                             attempt,
                             maxAttempts,
                         });
@@ -3371,6 +3456,14 @@ export class CSVIngestionService {
                         failed += batch.length;
                     } else {
                         inserted += batch.length;
+                        persistenceOperations.push({
+                            table,
+                            operation,
+                            status: 'succeeded',
+                            batch: Math.floor(i / BATCH_SIZE) + 1,
+                            rows: batch.length,
+                            metadata: { conflictKey: conflictKey || null },
+                        });
                     }
 
                     break;
@@ -3387,6 +3480,28 @@ export class CSVIngestionService {
                     }
                     accumulatedErrors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${errorMessage}`);
                     failed += batch.length;
+                    persistenceOperations.push({
+                        table,
+                        operation,
+                        status: 'failed',
+                        batch: Math.floor(i / BATCH_SIZE) + 1,
+                        rows: batch.length,
+                        message: error?.message,
+                        details: error?.details,
+                        hint: error?.hint,
+                    });
+                    logger.error('❌ [CSV INGESTION] Database write threw an exception', {
+                        stage: 'persistence',
+                        table,
+                        operation,
+                        errorCode: error?.code,
+                        message: error?.message,
+                        details: error?.details,
+                        hint: error?.hint,
+                        batch: Math.floor(i / BATCH_SIZE) + 1,
+                        batchSize: batch.length,
+                        conflictKey: conflictKey || null,
+                    });
                     break;
                 }
             }
@@ -3409,6 +3524,11 @@ export class CSVIngestionService {
             rowsSkipped: skipped,
             rowsFailed: failed,
             errors: accumulatedErrors,
+            persistenceStatus: rows.length === 0 ? 'not_attempted' : failed > 0
+                ? (inserted > 0 ? 'partial' : 'failed')
+                : 'succeeded',
+            persistenceError: persistenceOperations.find((entry) => entry.status === 'failed')?.message,
+            persistenceOperations,
             detectionTriggered: false,
         };
     }
