@@ -197,6 +197,20 @@ export function parseManualAuditDelimitedRecords(content: string): Record<string
     return records;
 }
 
+/** Parse and validate the header from a CSV/TSV that has no data rows. */
+export function parseManualAuditHeaders(content: string): string[] {
+    const lines = content
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^\uFEFF/, ''))
+        .filter((line) => line.trim().length > 0 && !line.trimStart().startsWith('#'));
+    if (lines.length === 0) return [];
+    const delimiter = detectManualAuditDelimiter(lines[0]);
+    const parsedHeader = parseDelimitedLine(lines[0], delimiter);
+    if (!parsedHeader.terminated) throw new Error('Malformed header: unterminated quoted field.');
+    validateManualAuditHeaders(parsedHeader.values);
+    return parsedHeader.values;
+}
+
 // ============================================================================
 // CSV Type Detection
 // ============================================================================
@@ -2217,7 +2231,39 @@ export class CSVIngestionService {
         const content = file.buffer.toString('utf-8');
         const records = parseManualAuditDelimitedRecords(content);
 
-        if (records.length === 0) {
+                if (records.length === 0) {
+            try {
+                const headers = parseManualAuditHeaders(content);
+                const csvType = options.explicitType || detectCSVType(headers, file.originalname);
+                if (csvType !== 'unknown' && !DISABLED_TYPES.has(csvType)) {
+                    const headerValidation = this.hasRequiredHeaders(csvType, headers);
+                    if (headerValidation.ok) {
+                        return {
+                            success: true,
+                            csvType,
+                            fileName: file.originalname,
+                            rowsProcessed: 0,
+                            rowsInserted: 0,
+                            rowsSkipped: 0,
+                            rowsFailed: 0,
+                            errors: [],
+                            inputIssue: 'empty',
+                            temporalEvidence: {
+                                status: 'unavailable',
+                                sourceDateField: null,
+                                earliestAt: null,
+                                latestAt: null,
+                                observedDateCount: 0,
+                                continuity: 'unknown',
+                                reason: 'The report family was recognized from its headers, but no data rows were supplied.',
+                            },
+                            detectionTriggered: false,
+                        };
+                    }
+                }
+            } catch {
+                // Fall through to the safe unknown/empty response below.
+            }
             return {
                 success: false,
                 csvType: 'unknown',
@@ -2231,7 +2277,6 @@ export class CSVIngestionService {
                 detectionTriggered: false,
             };
         }
-
         // Detect CSV type
         const headers = Object.keys(records[0]);
         const csvType = options.explicitType || detectCSVType(headers, file.originalname);

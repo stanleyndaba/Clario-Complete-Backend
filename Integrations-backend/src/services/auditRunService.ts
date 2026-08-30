@@ -83,6 +83,9 @@ type ManualCoverageArea = {
   status: ManualCoverageStatus;
   providedSources: string[];
   missingSources: string[];
+  optionalSources: string[];
+  evidenceRequired: string[];
+  operationalConclusion: 'supported' | 'unknown_outside_coverage';
   monetaryConclusion: 'within_covered_evidence' | 'unknown_outside_coverage';
   reason: string;
 };
@@ -412,44 +415,57 @@ const MANUAL_EVALUATION_AREA_DEFINITIONS: Array<{
   key: ManualCoverageArea['key'];
   label: string;
   requiredSources: string[];
+  optionalSources: string[];
+  evidenceRequired: string[];
   manualUploadSupported: boolean;
   unavailableReason?: string;
 }> = [
   {
     key: 'whale_hunter',
     label: 'Whale Hunter — inventory loss',
-    requiredSources: ['Inventory ledger', 'Financial events', 'Settlements'],
+    requiredSources: ['Inventory ledger'],
+    optionalSources: ['Orders', 'Shipments', 'Financial events', 'Settlements'],
+    evidenceRequired: ['Inventory ledger event', 'SKU/FNSKU', 'quantity movement'],
     manualUploadSupported: true,
   },
   {
     key: 'refund_trap',
     label: 'Refund Trap — refund without return',
-    requiredSources: ['Returns', 'Orders', 'Settlements'],
+    requiredSources: ['Returns', 'Orders'],
+    optionalSources: ['Settlements', 'Financial events'],
+    evidenceRequired: ['Order ID', 'return/refund context', 'amount and quantity context'],
     manualUploadSupported: true,
   },
   {
     key: 'broken_goods',
     label: 'Broken Goods Hunter — damaged returns',
-    requiredSources: ['Returns', 'Settlements'],
+    requiredSources: ['Returns'],
+    optionalSources: ['Inventory ledger', 'Settlements'],
+    evidenceRequired: ['Return row', 'reason/disposition', 'quantity movement'],
     manualUploadSupported: true,
   },
   {
     key: 'fee_phantom',
     label: 'Fee Phantom — fee anomalies',
-    requiredSources: ['Fees', 'Financial events'],
+    requiredSources: ['Fees'],
+    optionalSources: ['Financial events', 'Settlements'],
+    evidenceRequired: ['Fee event', 'fee type', 'charged amount'],
     manualUploadSupported: true,
   },
   {
     key: 'inbound_inspector',
     label: 'Inbound Inspector — inbound shipment evidence',
-    requiredSources: [],
-    manualUploadSupported: false,
-    unavailableReason: 'Requires canonical inbound source-run health and inbound shipment evidence that the supported manual report taxonomy does not provide.',
+    requiredSources: ['Shipments'],
+    optionalSources: ['Orders', 'Inventory ledger', 'Settlements'],
+    evidenceRequired: ['Shipment ID', 'SKU/FNSKU', 'shipped quantity', 'received quantity', 'shipment status/date'],
+    manualUploadSupported: true,
   },
   {
     key: 'sentinel',
     label: 'Sentinel — reimbursement reconciliation',
     requiredSources: ['Inventory ledger', 'Financial events', 'Settlements'],
+    optionalSources: ['Orders', 'Shipments', 'Returns'],
+    evidenceRequired: ['Loss-side event', 'settlement or reimbursement trail', 'reference entity', 'quantity/value gap'],
     manualUploadSupported: true,
   },
 ];
@@ -513,6 +529,9 @@ function buildManualCoverageAssessment(manualReport: ManualReportProcessingSumma
         status: 'unavailable',
         providedSources: [],
         missingSources: [],
+        optionalSources: definition.optionalSources,
+        evidenceRequired: definition.evidenceRequired,
+        operationalConclusion: 'unknown_outside_coverage',
         monetaryConclusion: 'unknown_outside_coverage',
         reason: definition.unavailableReason || 'This area cannot be evaluated from the supplied manual report set.',
       };
@@ -532,7 +551,14 @@ function buildManualCoverageAssessment(manualReport: ManualReportProcessingSumma
       status,
       providedSources,
       missingSources,
-      monetaryConclusion: status === 'supported' ? 'within_covered_evidence' : 'unknown_outside_coverage',
+      optionalSources: definition.optionalSources,
+      evidenceRequired: definition.evidenceRequired,
+      operationalConclusion: status === 'supported' ? 'supported' : 'unknown_outside_coverage',
+      monetaryConclusion: status === 'supported' && definition.optionalSources
+        .filter((source) => source === 'Settlements' || source === 'Financial events')
+        .every((source) => supplied.has(source))
+        ? 'within_covered_evidence'
+        : 'unknown_outside_coverage',
       reason: status === 'supported'
         ? 'All source families required for this manual-evidence assessment were supplied.'
         : status === 'partial'
@@ -2407,7 +2433,7 @@ class AuditRunService {
       ? {
           state: 'limited_coverage' as const,
           message: manualReport.filesProcessed > 0
-            ? `Margin processed ${manualReport.filesProcessed} uploaded report${manualReport.filesProcessed === 1 ? '' : 's'} across ${manualReport.sourceFamilies.length} supported source ${manualReport.sourceFamilies.length === 1 ? 'family' : 'families'}. Coverage is limited to the reports and periods provided; no connected Amazon data was used for this audit.`
+            ? `Partial examination. Margin processed ${manualReport.filesProcessed} uploaded report${manualReport.filesProcessed === 1 ? '' : 's'} across ${manualReport.sourceFamilies.length} supported source ${manualReport.sourceFamilies.length === 1 ? 'family' : 'families'}. It evaluated what the supplied evidence can establish; missing or failed sources remain unknown, and no connected Amazon data was used for this audit.`
             : 'Margin received uploaded reports, but durable row-processing details are unavailable. Coverage is limited to the reports and periods provided; no connected Amazon data was used for this audit.',
           retryable: false,
           hasUsableOperationalData: manualReport.rowsAccepted > 0 || manualReport.rowsParsed > 0,
