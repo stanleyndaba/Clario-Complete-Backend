@@ -231,11 +231,16 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['ReturnId', 'ReturnReason'],
     ],
     settlements: [
+        // Canonical/internal aliases.
         ['SettlementId', 'TransactionType'],
         ['settlement_id', 'transaction_type'],
         ['settlementId', 'transactionType'],
         ['Settlement ID', 'Transaction Type'],
+        // Amazon Settlement Transaction report variants.
         ['settlement-id', 'total-amount'],
+        ['settlement-id', 'transaction-type'],
+        ['settlement-id', 'settlement-start-date', 'settlement-end-date'],
+        ['settlement_id', 'total_amount'],
     ],
     inventory: [
         ['sellerSku', 'availableQuantity'],
@@ -243,16 +248,25 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
         ['FNSKU', 'ASIN', 'Event Type'],
         ['FNSKU', 'MSKU', 'Quantity'],
         ['Date', 'FNSKU', 'ASIN', 'MSKU'],
+        ['AdjustmentDate', 'FNSKU', 'ASIN'],
+        ['EventDate', 'FNSKU', 'ASIN'],
         ['fnsku', 'asin', 'event type'],
         ['fnsku', 'disposition', 'fulfillment center'],
     ],
     financial_events: [
+        // Canonical/internal aliases.
         ['EventType', 'PostedDate', 'Amount', 'Description'],
         ['event_type', 'posted_date', 'amount'],
         ['event_type', 'event_date', 'amount'],
         ['eventType', 'postedDate', 'amount'],
+        // Amazon Financial Events / adjustment export variants.
         ['AdjustmentEventId', 'PostedDate'],
         ['OriginalRemovalOrderId', 'LiquidationProceedsAmount'],
+        ['amazon-order-id', 'posted-date', 'transaction-type', 'amount'],
+        ['amazon_order_id', 'posted_date', 'transaction_type', 'amount'],
+        ['event-type', 'posted-date', 'amount'],
+        ['event_type', 'posted-date', 'amount'],
+        ['event-id', 'posted-date', 'amount'],
     ],
     fees: [
         ['FeeType', 'FeeAmount'],
@@ -274,7 +288,7 @@ const CSV_TYPE_SIGNATURES: Record<CSVType, string[][]> = {
  * resolve a structurally ambiguous schema. Callers that have an authoritative
  * report type may use the explicit typed upload route instead.
  */
-function detectCSVType(headers: string[], fileName: string = ''): CSVType {
+export function detectCSVType(headers: string[], fileName: string = ''): CSVType {
     const headerSet = new Set(headers.map(h => h.toLowerCase().replace(/[_\- ]/g, '')));
     const matchedTypes = new Set<CSVType>();
 
