@@ -1007,6 +1007,16 @@ class AuditRunService {
   }
 
   private assertFreeAuditEligible(previousAudit: any | null, sourceType: 'sp_api' | 'csv_upload') {
+    const unlimitedManualAuditTestMode = sourceType === 'csv_upload'
+      && process.env.MANUAL_AUDIT_TEST_MODE === 'true'
+      && process.env.MANUAL_AUDIT_UNLIMITED === 'true';
+    if (unlimitedManualAuditTestMode) {
+      logger.warn('Manual-audit complimentary eligibility bypass enabled for explicit test mode', {
+        sourceType,
+        testMode: true,
+      });
+      return;
+    }
     if (!previousAudit?.next_eligible_at) return;
 
     const nextEligibleAt = new Date(previousAudit.next_eligible_at).getTime();

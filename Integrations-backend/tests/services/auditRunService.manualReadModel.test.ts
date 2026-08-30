@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import auditRunService from '../../src/services/auditRunService';
 import { supabaseAdmin } from '../../src/database/supabaseClient';
 
@@ -491,5 +491,38 @@ describe('auditRunService manual report read model', () => {
     await expect(auditRunService.getAudit(completedSyntheticAudit.id, userId, '33333333-3333-4333-8333-333333333333'))
       .rejects.toThrow('Audit run not found');
     expect(detailQuery.eq).toHaveBeenCalledWith('tenant_id', '33333333-3333-4333-8333-333333333333');
+  });
+});
+
+
+describe('manual audit test-mode eligibility guard', () => {
+  const service: any = auditRunService;
+  const futureAudit = { next_eligible_at: '2099-01-01T00:00:00.000Z' };
+  const originalTestMode = process.env.MANUAL_AUDIT_TEST_MODE;
+  const originalUnlimited = process.env.MANUAL_AUDIT_UNLIMITED;
+
+  afterEach(() => {
+    if (originalTestMode === undefined) delete process.env.MANUAL_AUDIT_TEST_MODE;
+    else process.env.MANUAL_AUDIT_TEST_MODE = originalTestMode;
+    if (originalUnlimited === undefined) delete process.env.MANUAL_AUDIT_UNLIMITED;
+    else process.env.MANUAL_AUDIT_UNLIMITED = originalUnlimited;
+  });
+
+  it('bypasses the next eligible date only for explicit manual-audit test mode', () => {
+    process.env.MANUAL_AUDIT_TEST_MODE = 'true';
+    process.env.MANUAL_AUDIT_UNLIMITED = 'true';
+    expect(() => service.assertFreeAuditEligible(futureAudit, 'csv_upload')).not.toThrow();
+  });
+
+  it('keeps the production guard active when the flags are absent', () => {
+    delete process.env.MANUAL_AUDIT_TEST_MODE;
+    delete process.env.MANUAL_AUDIT_UNLIMITED;
+    expect(() => service.assertFreeAuditEligible(futureAudit, 'csv_upload')).toThrow('next complimentary manual report audit');
+  });
+
+  it('never bypasses connected-Amazon audit eligibility', () => {
+    process.env.MANUAL_AUDIT_TEST_MODE = 'true';
+    process.env.MANUAL_AUDIT_UNLIMITED = 'true';
+    expect(() => service.assertFreeAuditEligible(futureAudit, 'sp_api')).toThrow('next complimentary connected Amazon audit');
   });
 });
