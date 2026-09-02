@@ -155,6 +155,12 @@ export interface RefundWithoutReturnEvidence {
 
     evidence_summary: string;
     refund_event_id: string;
+
+    // Explicit commercial truth for claim-candidate findings.
+    review_tier?: 'claim_candidate';
+    claim_readiness?: 'claim_ready';
+    recommended_action?: 'file_claim';
+    value_label?: 'estimated_recovery';
 }
 
 // ============================================================================
@@ -409,7 +415,13 @@ export function detectRefundWithoutReturn(
             estimated_value: shortfallValue,
             currency: refund.currency || 'USD',
             confidence_score: daysSinceRefund > 60 ? 0.95 : 0.75,
-            evidence,
+            evidence: {
+                ...evidence,
+                review_tier: 'claim_candidate',
+                claim_readiness: 'claim_ready',
+                recommended_action: 'file_claim',
+                value_label: 'estimated_recovery',
+            },
             related_event_ids: [refund.id],
             discovery_date: discoveryDate, 
             deadline_date: deadline, 

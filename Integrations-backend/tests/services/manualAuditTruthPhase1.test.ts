@@ -1824,7 +1824,7 @@ describe('Manual Audit truth test phase 1', () => {
 
     expect(decision).toMatchObject({
       commercial_state: 'WORKSPACE',
-      commercial_route: 'RECOVERY_CONTROL',
+      commercial_route: 'WORKSPACE',
       commercial_eligibility: 'eligible',
     });
   });

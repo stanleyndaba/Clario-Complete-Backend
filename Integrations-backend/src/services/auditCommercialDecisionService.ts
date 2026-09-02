@@ -2,6 +2,7 @@ export type CommercialRoute =
   | 'RECOVER_ONCE'
   | 'WORKSPACE'
   | 'RECOVERY_CONTROL'
+  | 'TALK_TO_SALES'
   | 'EVIDENCE_REMEDIATION'
   | 'PROVIDER_QA'
   | 'NURTURE'
@@ -20,6 +21,7 @@ export type CommercialState =
   | 'RECOVER_ONCE'
   | 'WORKSPACE'
   | 'RECOVERY_CONTROL'
+  | 'TALK_TO_SALES'
   | 'EVIDENCE_REMEDIATION'
   | 'PROVIDER_QA'
   | 'NURTURE'
@@ -39,6 +41,8 @@ export interface AuditSummaryLike {
   sourcesReviewed?: string[] | null;
   sourcesUnavailable?: string[] | null;
   retryable?: boolean | null;
+  detectorFamilyCount?: number | null;
+  crossRailOverlapCount?: number | null;
 }
 
 export interface AuditRecordLike {
@@ -75,6 +79,9 @@ export interface CommercialComparison {
   sources_changed: string[];
   unresolved_sources: string[];
   recurring_burden: boolean;
+  detector_family_count: number;
+  cross_rail_overlap_count: number;
+  complexity_reason_codes: string[];
   operational_burden_score: number;
 }
 
@@ -171,6 +178,8 @@ function analyzeAuditSummary(summary?: AuditSummaryLike | null) {
   const sourcesReviewed = normalizeList(safe.sourcesReviewed);
   const sourcesUnavailable = normalizeList(safe.sourcesUnavailable);
   const categories = normalizeList(safe.categories);
+  const detectorFamilyCount = Math.max(0, toCount(safe.detectorFamilyCount ?? categories.length));
+  const crossRailOverlapCount = Math.max(0, toCount(safe.crossRailOverlapCount));
   return {
     scopeValue,
     findingsCount,
@@ -179,6 +188,8 @@ function analyzeAuditSummary(summary?: AuditSummaryLike | null) {
     sourcesReviewed,
     sourcesUnavailable,
     categories,
+    detectorFamilyCount,
+    crossRailOverlapCount,
     finalStatus: normalizeMessage(safe.finalStatus),
     message: normalizeMessage(safe.message),
     retryable: Boolean(safe.retryable),
@@ -202,6 +213,9 @@ export function compareAuditPeriods(previous: AuditSummaryLike | null | undefine
     persistentCategories.length > 0 ||
     newCategories.length > 0
   );
+  const complexityReasonCodes: string[] = [];
+  if (curr.detectorFamilyCount >= 3) complexityReasonCodes.push('multi_family');
+  if (curr.crossRailOverlapCount > 0) complexityReasonCodes.push('cross_rail_overlap');
   const operationalBurdenScore =
     (curr.findingsCount * 4) +
     (curr.evidenceReadyCount * 2) +
@@ -231,6 +245,9 @@ export function compareAuditPeriods(previous: AuditSummaryLike | null | undefine
     sources_changed: sourcesChanged,
     unresolved_sources: unresolvedSources,
     recurring_burden: recurringBurden,
+    detector_family_count: curr.detectorFamilyCount,
+    cross_rail_overlap_count: curr.crossRailOverlapCount,
+    complexity_reason_codes: complexityReasonCodes,
     operational_burden_score: operationalBurdenScore,
   };
 }
@@ -246,11 +263,16 @@ function buildReason(state: CommercialState, route: CommercialRoute, current: Re
     case 'RECOVER_ONCE':
       return `${availabilityNote} Margin identified a verified recovery opportunity that can be executed as a one-time engagement.`;
     case 'WORKSPACE':
+      return hasRecoveryWorkspace
+        ? `${availabilityNote} The seller has an active Recovery Workspace and the audit indicates ongoing recovery-control work.`
+        : `${availabilityNote} Margin identified an established recurring recovery pattern and recommends Recovery Workspace. The seller is eligible to purchase the Workspace product.`;
+    case 'TALK_TO_SALES':
+      return `${availabilityNote} Margin identified a complex recovery profile requiring human-reviewed Recovery Program Review (${comparison.complexity_reason_codes.join(', ')}).`;
     case 'RECOVERY_CONTROL': {
       const basis = hasRecoveryWorkspace
         ? 'an existing Recovery Workspace'
         : `recurring burden with an operational-burden score of ${comparison.operational_burden_score} (threshold: 15)`;
-      return `${availabilityNote} Margin recommended a sales-led recovery-control conversation because the audit indicates ${basis}. This is not an Enterprise or Scale qualification.`;
+      return `${availabilityNote} Margin recommended a recovery-control conversation because the audit indicates ${basis}. This legacy route remains readable for previously persisted decisions.`;
     }
     case 'EVIDENCE_REMEDIATION':
       return `${availabilityNote} Margin could not fully evaluate the recovery opportunity without additional evidence.`;
@@ -281,6 +303,7 @@ export function classifyCommercialDecision(input: {
   const comparison = compareAuditPeriods(previous, current, input.previousAudit?.id || null, input.currentAudit.id);
   const now = new Date().toISOString();
   const hasRecoveryWorkspace = Boolean(input.hasRecoveryWorkspace);
+  const isComplexRecovery = comparison.complexity_reason_codes.length > 0;
 
   let commercial_state: CommercialState = 'NO_SALE';
   let commercial_route: CommercialRoute = 'NO_SALE';
@@ -291,13 +314,17 @@ export function classifyCommercialDecision(input: {
     commercial_route = 'EVIDENCE_REMEDIATION';
     commercial_eligibility = 'recheck_later';
   } else if (current.findingsCount > 0) {
-    if (hasRecoveryWorkspace || (comparison.recurring_burden && comparison.operational_burden_score >= 15)) {
-      commercial_state = hasRecoveryWorkspace
-        ? 'WORKSPACE'
-        : comparison.recurring_burden
-          ? 'R0-H'
-          : 'R0-E';
-      commercial_route = 'RECOVERY_CONTROL';
+    if (hasRecoveryWorkspace) {
+      commercial_state = 'WORKSPACE';
+      commercial_route = 'WORKSPACE';
+      commercial_eligibility = 'eligible';
+    } else if (isComplexRecovery) {
+      commercial_state = 'TALK_TO_SALES';
+      commercial_route = 'TALK_TO_SALES';
+      commercial_eligibility = 'manual_review';
+    } else if (comparison.recurring_burden && comparison.operational_burden_score >= 15) {
+      commercial_state = 'WORKSPACE';
+      commercial_route = 'WORKSPACE';
       commercial_eligibility = 'eligible';
     } else if (current.evidenceReadyCount > 0 && current.scopeValue > 0) {
       commercial_state = 'VERIFIED_RECOVERY';
@@ -330,6 +357,9 @@ export function classifyCommercialDecision(input: {
     current,
     comparison,
     hasRecoveryWorkspace,
+    workspace_recommendation: commercial_route === 'WORKSPACE' && !hasRecoveryWorkspace,
+    sales_review_required: commercial_route === 'TALK_TO_SALES',
+    complexity_reason_codes: comparison.complexity_reason_codes,
     route: commercial_route,
     state: commercial_state,
     commercial_eligibility,

@@ -113,6 +113,8 @@ type AuditSummary = {
   scopeValue: number;
   findingsCount: number;
   categories: string[];
+  detectorFamilyCount?: number;
+  crossRailOverlapCount?: number;
   evidenceReadyCount: number;
   reviewOnlyCount?: number;
   locked: boolean;
@@ -2394,6 +2396,8 @@ class AuditRunService {
     const categories: string[] = Array.from(
       new Set<string>(normalizedCategories)
     ).slice(0, 7);
+    const detectorFamilyCount = new Set(normalizedCategories).size;
+    const crossRailOverlapCount = rows.filter((row: any) => Boolean(row?.evidence?.cross_rail_overlap)).length;
     const scopeValue = rows.reduce((sum: number, row: any) => sum + getCountedValue(row), 0);
     const evidenceReadyCount = rows.filter((row: any) =>
       row?.claim_readiness === 'claim_ready' ||
@@ -2469,6 +2473,8 @@ class AuditRunService {
       scopeValue,
       findingsCount: rows.length,
       categories,
+      detectorFamilyCount,
+      crossRailOverlapCount,
       evidenceReadyCount,
       reviewOnlyCount,
       locked: true,

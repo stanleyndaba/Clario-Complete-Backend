@@ -221,10 +221,9 @@ describe('auditCommercialDecisionService', () => {
     });
 
     expect(decision.commercial_state).toBe('WORKSPACE');
-    expect(decision.commercial_route).toBe('RECOVERY_CONTROL');
+    expect(decision.commercial_route).toBe('WORKSPACE');
     expect(decision.commercial_eligibility).toBe('eligible');
-    expect(decision.commercial_reason).toContain('an existing Recovery Workspace');
-    expect(decision.commercial_reason).toContain('not an Enterprise or Scale qualification');
+    expect(decision.commercial_reason).toContain('active Recovery Workspace');
   });
 
   it('keeps a large one-time recovery in Recover Once rather than inferring Talk to Sales', () => {
@@ -268,7 +267,7 @@ describe('auditCommercialDecisionService', () => {
       findingsCount: 3,
       evidenceReadyCount: 2,
       recordsReviewed: 60,
-      categories: ['Settlement discrepancy', 'Refund mismatch'],
+      categories: ['Settlement discrepancy', 'Refund mismatch', 'Inbound shortage'],
       sourcesReviewed: ['Settlements', 'Returns'],
       sourcesUnavailable: ['Shipments'],
     };
@@ -280,10 +279,43 @@ describe('auditCommercialDecisionService', () => {
       hasRecoveryWorkspace: false,
     });
 
-    expect(decision.commercial_route).toBe('RECOVERY_CONTROL');
+    expect(decision.commercial_route).toBe('TALK_TO_SALES');
+    expect(decision.commercial_eligibility).toBe('manual_review');
+    expect(decision.commercial_reason).toContain('multi_family');
+  });
+
+  it('recommends Workspace for a first-time seller with established recurring burden', () => {
+    const previous = {
+      id: 'audit-recurring-prev', user_id: 'user-1', tenant_id: 'tenant-1',
+      summary: { scopeValue: 4000, findingsCount: 1, evidenceReadyCount: 0, recordsReviewed: 40, categories: ['Refund mismatch'] },
+    };
+    const current = {
+      id: 'audit-recurring-current', user_id: 'user-1', tenant_id: 'tenant-1',
+      summary: { scopeValue: 5000, findingsCount: 3, evidenceReadyCount: 2, recordsReviewed: 50, categories: ['Refund mismatch'] },
+    };
+    const decision = classifyCommercialDecision({ currentAudit: current, currentSummary: current.summary, previousAudit: previous, hasRecoveryWorkspace: false });
+    expect(decision.commercial_state).toBe('WORKSPACE');
+    expect(decision.commercial_route).toBe('WORKSPACE');
     expect(decision.commercial_eligibility).toBe('eligible');
-    expect(decision.commercial_reason).toContain('operational-burden score of 21');
-    expect(decision.commercial_reason).toContain('not an Enterprise or Scale qualification');
+    expect(decision.commercial_evidence_basis.workspace_recommendation).toBe(true);
+    expect(decision.commercial_evidence_basis.sales_review_required).toBe(false);
+  });
+
+  it('routes a first-time multi-family recovery to Talk to Sales, not Workspace', () => {
+    const previous = {
+      id: 'audit-complex-prev', user_id: 'user-1', tenant_id: 'tenant-1',
+      summary: { scopeValue: 4000, findingsCount: 1, evidenceReadyCount: 0, recordsReviewed: 40, categories: ['Refund mismatch'] },
+    };
+    const current = {
+      id: 'audit-complex-current', user_id: 'user-1', tenant_id: 'tenant-1',
+      summary: { scopeValue: 9000, findingsCount: 3, evidenceReadyCount: 2, recordsReviewed: 60, categories: ['Refund mismatch', 'Inbound shortage', 'Fee overcharge'] },
+    };
+    const decision = classifyCommercialDecision({ currentAudit: current, currentSummary: current.summary, previousAudit: previous, hasRecoveryWorkspace: false });
+    expect(decision.commercial_state).toBe('TALK_TO_SALES');
+    expect(decision.commercial_route).toBe('TALK_TO_SALES');
+    expect(decision.commercial_eligibility).toBe('manual_review');
+    expect(decision.commercial_evidence_basis.workspace_recommendation).toBe(false);
+    expect(decision.commercial_evidence_basis.sales_review_required).toBe(true);
   });
 
   it('builds a control statement from the decision', () => {

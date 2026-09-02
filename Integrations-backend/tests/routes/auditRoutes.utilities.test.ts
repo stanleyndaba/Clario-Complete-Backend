@@ -7,6 +7,7 @@ import auditRunService from '../../src/services/auditRunService';
 jest.mock('../../src/middleware/authMiddleware', () => ({
   authenticateToken: (req: any, _res: any, next: any) => {
     req.user = { id: 'user-1', email: 'seller@example.com' };
+    req.tenant = { tenantId: 'tenant-1', tenantSlug: 'tenant-1' };
     next();
   },
 }));
@@ -41,7 +42,7 @@ describe('audit utility routes', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.audits).toEqual([{ id: 'audit-1' }]);
-    expect(auditRunService.getAuditHistory).toHaveBeenCalledWith('user-1', 18);
+    expect(auditRunService.getAuditHistory).toHaveBeenCalledWith('user-1', 18, 'tenant-1');
     expect(auditRunService.getAudit).not.toHaveBeenCalled();
   });
 
@@ -55,7 +56,7 @@ describe('audit utility routes', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.entitlement.entitled).toBe(false);
-    expect(auditRunService.getSchedule).toHaveBeenCalledWith('user-1');
+    expect(auditRunService.getSchedule).toHaveBeenCalledWith('user-1', 'tenant-1');
     expect(auditRunService.getAudit).not.toHaveBeenCalled();
   });
 
@@ -66,7 +67,7 @@ describe('audit utility routes', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.audit.id).toBe('audit-123');
-    expect(auditRunService.getAudit).toHaveBeenCalledWith('audit-123', 'user-1');
+    expect(auditRunService.getAudit).toHaveBeenCalledWith('audit-123', 'user-1', 'tenant-1');
   });
 
   it('routes audit commercial lookups without treating them as audit ids', async () => {
@@ -90,7 +91,7 @@ describe('audit utility routes', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.commercial.route).toBe('RECOVER_ONCE');
-    expect(auditRunService.getAudit).toHaveBeenCalledWith('audit-123', 'user-1');
+    expect(auditRunService.getAudit).toHaveBeenCalledWith('audit-123', 'user-1', 'tenant-1');
   });
 
   it('returns a controlled 404 for audit ids outside the authenticated user scope', async () => {
