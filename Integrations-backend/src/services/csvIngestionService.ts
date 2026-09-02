@@ -1126,7 +1126,6 @@ export class CSVIngestionService {
         if (syntheticExecution) {
             validateSyntheticAuditExecutionContext(tenantId, syntheticExecution);
         }
-
         const receivedFiles = files;
         const rejectedTransferResults: IngestionResult[] = [];
         if (!syntheticExecution) {
@@ -1136,7 +1135,6 @@ export class CSVIngestionService {
                 const entireTransferLedgerFile = inspection?.csvType === 'inventory'
                     && inspection.prohibitedInventoryRowCount === inspection.records.length;
                 if (!entireStructuredTransferFile && !entireTransferLedgerFile) return true;
-
                 const rowsProcessed = inspection?.records.length || 0;
                 rejectedTransferResults.push({
                     success: false,

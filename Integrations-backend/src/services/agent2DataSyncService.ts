@@ -49,6 +49,92 @@ import { evaluateTransferLedgerShadowEligibility } from './transferLedgerShadowE
 
 const INBOUND_V0_PRIMARY_FLAG = 'connected_inbound_v0_primary';
 
+export interface TransferLedgerShadowExecutionContext {
+  userId: string;
+  tenantId: string;
+  storeId: string;
+  syncId: string;
+  ledgerSyncId: string;
+  historyCoverageStart: Date;
+  historyCoverageEnd: Date;
+  historyCoverageStatus: 'FULL' | 'PARTIAL';
+  ledgerResult: { success: boolean; count: number; message?: string };
+}
+
+export interface TransferLedgerShadowExecutionDependencies {
+  evaluateFlag: (flagKey: string, userId: string) => Promise<any>;
+  resolveMarketplaceId: (tenantId: string, storeId: string) => Promise<string>;
+  observe: (request: any) => Promise<any>;
+}
+
+export interface TransferLedgerShadowExecutionResult {
+  attempted: boolean;
+  reason: string;
+  marketplaceId: string | null;
+  observationResult: any | null;
+  claimCapable: false;
+  detectorInvoked: false;
+  catalogExecuted: false;
+  recoveryInvoked: false;
+  financialTruthInvoked: false;
+  economicValue: null;
+}
+
+/**
+ * The sole Agent 2 handoff to the Transfer rail. It can only evaluate the
+ * narrow SHADOW observation contract and invoke the existing persisted-Ledger
+ * observer. It exposes no detector, catalog, claim, recovery, or financial
+ * dependency and returns explicit zero-activation fields on every path.
+ */
+export async function executeTransferLedgerShadowObservation(
+  context: TransferLedgerShadowExecutionContext,
+  dependencies: TransferLedgerShadowExecutionDependencies,
+): Promise<TransferLedgerShadowExecutionResult> {
+  const evaluation = await dependencies.evaluateFlag(TRANSFER_LEDGER_OBSERVATION_FLAG, context.userId);
+  const eligibility = evaluateTransferLedgerShadowEligibility(evaluation);
+  const zeroActivation = {
+    claimCapable: false as const,
+    detectorInvoked: false as const,
+    catalogExecuted: false as const,
+    recoveryInvoked: false as const,
+    financialTruthInvoked: false as const,
+    economicValue: null,
+  };
+
+  if (!eligibility.eligible) {
+    return {
+      attempted: false,
+      reason: eligibility.reason,
+      marketplaceId: null,
+      observationResult: null,
+      ...zeroActivation,
+    };
+  }
+
+  const marketplaceId = await dependencies.resolveMarketplaceId(context.tenantId, context.storeId);
+  const observationResult = await dependencies.observe({
+    userId: context.userId,
+    tenantId: context.tenantId,
+    storeId: context.storeId,
+    syncId: context.syncId,
+    ledgerSyncId: context.ledgerSyncId,
+    marketplaceId,
+    originClassification: 'PERSISTED_PROVIDER_LEDGER',
+    historyCoverageStart: context.historyCoverageStart,
+    historyCoverageEnd: context.historyCoverageEnd,
+    historyCoverageStatus: context.historyCoverageStatus,
+    ledgerResult: context.ledgerResult,
+  });
+
+  return {
+    attempted: true,
+    reason: eligibility.reason,
+    marketplaceId,
+    observationResult,
+    ...zeroActivation,
+  };
+}
+
 export interface SyncResult {
   success: boolean;
   syncId: string;
@@ -940,51 +1026,53 @@ export class Agent2DataSyncService {
       // 7b. P1 Transfer Auditor: existing-Ledger, zero-claim WhseTransfers observation rail.
       // It has no Amazon acquisition path, never writes inventory_transfers, and cannot invoke a detector.
       try {
-        const transferObservationFlag = await featureFlagService.evaluate(TRANSFER_LEDGER_OBSERVATION_FLAG, userId);
-        const transferShadowEligibility = evaluateTransferLedgerShadowEligibility(transferObservationFlag);
+        const transferExecution = await executeTransferLedgerShadowObservation({
+          userId,
+          tenantId: resolvedTenantId,
+          storeId: resolvedStoreId,
+          // Parent audit sync remains the source-health/observation scope.
+          syncId: detectionSyncId,
+          // Existing Ledger persistence remains owned by Agent 2's own sync ID.
+          ledgerSyncId: syncId,
+          historyCoverageStart: syncStartDate,
+          historyCoverageEnd: syncEndDate,
+          // Coverage means only whether the requested Ledger window reaches
+          // the current 18-month source horizon; it is never a transfer
+          // maturity or pairing-window inference.
+          historyCoverageStatus: syncStartDate.getTime() <= Date.now() - ((this.ONBOARDING_BACKFILL_DAYS - 1) * 24 * 60 * 60 * 1000)
+            ? 'FULL'
+            : 'PARTIAL',
+          ledgerResult,
+        }, {
+          evaluateFlag: (flagKey, flagUserId) => featureFlagService.evaluate(flagKey, flagUserId),
+          resolveMarketplaceId: (tenantId, storeId) => this.resolveTransferObservationMarketplaceId(tenantId, storeId),
+          observe: (request) => transferLedgerObservationService.observe(request),
+        });
 
-        if (transferShadowEligibility.eligible) {
-          const marketplaceId = await this.resolveTransferObservationMarketplaceId(resolvedTenantId, resolvedStoreId);
-          const observationResult = await transferLedgerObservationService.observe({
-            userId,
-            tenantId: resolvedTenantId,
-            storeId: resolvedStoreId,
-            // Parent audit sync remains the source-health/observation scope.
-            syncId: detectionSyncId,
-            // Existing Ledger persistence remains owned by Agent 2's own sync ID.
-            ledgerSyncId: syncId,
-            marketplaceId,
-            historyCoverageStart: syncStartDate,
-            historyCoverageEnd: syncEndDate,
-            // Coverage means only whether the requested Ledger window reaches
-            // the current 18-month source horizon; it is never a transfer
-            // maturity or pairing-window inference.
-            historyCoverageStatus: syncStartDate.getTime() <= Date.now() - ((this.ONBOARDING_BACKFILL_DAYS - 1) * 24 * 60 * 60 * 1000)
-              ? 'FULL'
-              : 'PARTIAL',
-            ledgerResult,
-          });
+        if (transferExecution.attempted) {
           logger.info('✅ [AGENT 2] Transfer Ledger observation SHADOW completed without claims', {
             userId,
             tenantId: resolvedTenantId,
             storeId: resolvedStoreId,
-            marketplaceId,
+            marketplaceId: transferExecution.marketplaceId,
             syncId: detectionSyncId,
             ledgerSyncId: syncId,
-            healthStatus: observationResult.healthStatus,
-            observationCount: observationResult.observationCount,
-            ambiguityCount: observationResult.ambiguityCount,
-            claimCapable: observationResult.claimCapable,
+            healthStatus: transferExecution.observationResult?.healthStatus,
+            observationCount: transferExecution.observationResult?.observationCount,
+            ambiguityCount: transferExecution.observationResult?.ambiguityCount,
+            claimCapable: transferExecution.claimCapable,
+            detectorInvoked: transferExecution.detectorInvoked,
+            catalogExecuted: transferExecution.catalogExecuted,
+            recoveryInvoked: transferExecution.recoveryInvoked,
+            financialTruthInvoked: transferExecution.financialTruthInvoked,
+            economicValue: transferExecution.economicValue,
           });
         } else {
           logger.info('ℹ️ [AGENT 2] Transfer Ledger observation rail disabled or ineligible', {
             userId,
             syncId: detectionSyncId,
-            reason: transferShadowEligibility.reason,
-            mode: transferShadowEligibility.mode,
-            enabled: transferObservationFlag.enabled,
-            claimCapable: transferShadowEligibility.claimCapable,
-            observationVersion: transferShadowEligibility.observationVersion,
+            reason: transferExecution.reason,
+            claimCapable: transferExecution.claimCapable,
           });
         }
       } catch (transferObservationError: any) {

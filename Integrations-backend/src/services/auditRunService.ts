@@ -2459,6 +2459,11 @@ class AuditRunService {
       executionProvenance: metadata.executionProvenance,
       syntheticTraining: metadata.syntheticTraining,
     });
+    const syntheticExecution = resolveTrustedSyntheticAuditExecutionContext(tenantId, syncId, {
+      executionProvenance: metadata.executionProvenance,
+      syntheticTraining: metadata.syntheticTraining,
+    });
+    const syntheticTraining = Boolean(syntheticExecution);
 
     const summary: AuditSummary = {
       scopeValue,
@@ -2478,7 +2483,7 @@ class AuditRunService {
       retryable: truth.retryable
     };
 
-    return summary;
+    return syntheticTraining ? withSyntheticTrainingSummary(summary) : summary;
   }
 
   private async getFindingSummaries(userId: string, tenantId: string, syncId: string) {

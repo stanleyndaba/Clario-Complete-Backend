@@ -5,11 +5,24 @@ import logger from '../utils/logger';
 export const TRANSFER_LEDGER_OBSERVATION_FLAG = 'connected_transfer_ledger_observation';
 export const TRANSFER_LEDGER_OBSERVATION_SOURCE = 'amazon_inventory_ledger';
 export const TRANSFER_LEDGER_OBSERVATION_VERSION = 'v1';
+/** A persisted Ledger window older than this is explicitly stale for observation certification. */
+export const TRANSFER_LEDGER_MAX_SOURCE_AGE_MS = 24 * 60 * 60 * 1000;
+
+export type TransferLedgerObservationOrigin = 'PERSISTED_PROVIDER_LEDGER' | 'TEST_FIXTURE';
+export type TransferLedgerEvidenceState = 'FRESH' | 'STALE' | 'INCOMPLETE_HISTORY' | 'SOURCE_UNAVAILABLE';
+
+export interface TransferLedgerEvidenceProvenance {
+  sourceFingerprint: string;
+  origin: TransferLedgerObservationOrigin;
+  evidenceState: TransferLedgerEvidenceState;
+  executionContext: 'LOCAL_OBSERVATION_ONLY';
+}
 
 export type TransferLedgerHealthStatus =
   | 'AVAILABLE_DATA'
   | 'AVAILABLE_ZERO_QUALIFYING_DATA'
   | 'AVAILABLE_PARTIAL_HISTORY'
+  | 'AVAILABLE_STALE_HISTORY'
   | 'UNSUPPORTED_EVENT_SEMANTICS'
   | 'AMBIGUOUS_TRANSFER_EVIDENCE'
   | 'ACCESS_DENIED'
@@ -36,6 +49,8 @@ export interface TransferLedgerObservationRequest {
   syncId: string;
   /** The existing Agent 2 Ledger persistence sync identifier. */
   ledgerSyncId: string;
+  /** Explicitly distinguishes persisted provider ledger rows from in-memory test fixtures. */
+  originClassification: TransferLedgerObservationOrigin;
   historyCoverageStart: Date;
   historyCoverageEnd: Date;
   ledgerResult: LedgerObservationSourceResult;
@@ -50,6 +65,7 @@ export interface TransferLedgerObservationResult {
   observationCount: number;
   ambiguityCount: number;
   claimCapable: false;
+  provenance: TransferLedgerEvidenceProvenance;
   errorClass?: string;
   errorMessage?: string;
 }
@@ -138,10 +154,63 @@ export class TransferLedgerObservationError extends Error {
 export class TransferLedgerObservationService {
   constructor(private readonly db: DatabaseClient = supabaseAdmin as unknown as DatabaseClient) {}
 
+  private deriveEvidenceState(
+    input: TransferLedgerObservationRequest,
+    observedAt: Date,
+    historyCoverageStatus: 'FULL' | 'PARTIAL' | 'UNKNOWN',
+  ): TransferLedgerEvidenceState {
+    if (!input.ledgerResult.success) return 'SOURCE_UNAVAILABLE';
+    if (historyCoverageStatus !== 'FULL') return 'INCOMPLETE_HISTORY';
+    if (observedAt.getTime() - input.historyCoverageEnd.getTime() > TRANSFER_LEDGER_MAX_SOURCE_AGE_MS) return 'STALE';
+    return 'FRESH';
+  }
+
+  private deriveProvenance(
+    input: TransferLedgerObservationRequest,
+    observedAt: Date,
+    historyCoverageStatus: 'FULL' | 'PARTIAL' | 'UNKNOWN',
+    providerFingerprints: readonly string[] = [],
+  ): TransferLedgerEvidenceProvenance {
+    const origin: TransferLedgerObservationOrigin = input.originClassification === 'PERSISTED_PROVIDER_LEDGER'
+      ? 'PERSISTED_PROVIDER_LEDGER'
+      : 'TEST_FIXTURE';
+    const canonicalIdentity = JSON.stringify({
+      tenantId: input.tenantId,
+      userId: input.userId,
+      storeId: input.storeId,
+      marketplaceId: input.marketplaceId,
+      syncId: input.syncId,
+      ledgerSyncId: input.ledgerSyncId,
+      historyCoverageStart: input.historyCoverageStart.toISOString(),
+      historyCoverageEnd: input.historyCoverageEnd.toISOString(),
+      historyCoverageStatus,
+      ledgerResult: { success: input.ledgerResult.success, count: input.ledgerResult.count },
+      origin,
+      providerFingerprints: [...providerFingerprints].sort(),
+      observationVersion: TRANSFER_LEDGER_OBSERVATION_VERSION,
+    });
+    return {
+      sourceFingerprint: crypto.createHash('sha256').update(canonicalIdentity, 'utf8').digest('hex'),
+      origin,
+      evidenceState: this.deriveEvidenceState(input, observedAt, historyCoverageStatus),
+      executionContext: 'LOCAL_OBSERVATION_ONLY',
+    };
+  }
+
+  private healthForEvidenceState(
+    evidenceState: TransferLedgerEvidenceState,
+    otherwise: TransferLedgerHealthStatus,
+  ): TransferLedgerHealthStatus {
+    if (evidenceState === 'INCOMPLETE_HISTORY') return 'AVAILABLE_PARTIAL_HISTORY';
+    if (evidenceState === 'STALE') return 'AVAILABLE_STALE_HISTORY';
+    return otherwise;
+  }
+
   async observe(input: TransferLedgerObservationRequest): Promise<TransferLedgerObservationResult> {
     const observedAt = input.observedAt || new Date();
     const sourceRunId = crypto.randomUUID();
     const historyCoverageStatus = input.historyCoverageStatus || (input.ledgerResult.success ? 'FULL' : 'UNKNOWN');
+    const baseProvenance = this.deriveProvenance(input, observedAt, historyCoverageStatus);
 
     if (!input.ledgerResult.success) {
       const unavailable = this.classifyLedgerFailure(input.ledgerResult.message);
@@ -155,8 +224,9 @@ export class TransferLedgerObservationService {
         ambiguityCount: 0,
         errorClass: unavailable.errorClass,
         errorMessage: input.ledgerResult.message || null,
+        provenance: baseProvenance,
       });
-      return this.toResult(sourceRunId, unavailable.status, historyCoverageStatus, 0, 0, unavailable.errorClass, input.ledgerResult.message);
+      return this.toResult(sourceRunId, unavailable.status, historyCoverageStatus, 0, 0, unavailable.errorClass, input.ledgerResult.message, baseProvenance);
     }
 
     let rows: LedgerRow[];
@@ -167,6 +237,7 @@ export class TransferLedgerObservationService {
         .eq('tenant_id', input.tenantId)
         .eq('user_id', input.userId)
         .eq('store_id', input.storeId)
+        .eq('marketplace_id', input.marketplaceId)
         .eq('sync_id', input.ledgerSyncId)
         .eq('source', 'sp_api');
       if (error) throw new Error(error.message || 'Ledger observation query failed.');
@@ -183,14 +254,20 @@ export class TransferLedgerObservationService {
         ambiguityCount: 0,
         errorClass: 'LEDGER_OBSERVATION_QUERY_FAILURE',
         errorMessage: message,
+        provenance: baseProvenance,
       });
-      return this.toResult(sourceRunId, 'PARSER_FAILURE', historyCoverageStatus, 0, 0, 'LEDGER_OBSERVATION_QUERY_FAILURE', message);
+      return this.toResult(sourceRunId, 'PARSER_FAILURE', historyCoverageStatus, 0, 0, 'LEDGER_OBSERVATION_QUERY_FAILURE', message, baseProvenance);
     }
 
+    const sourceProvenance = this.deriveProvenance(
+      input,
+      observedAt,
+      historyCoverageStatus,
+      rows.map((row) => String(row.provider_row_fingerprint || '')).filter(Boolean),
+    );
+
     if (rows.length === 0) {
-      const healthStatus: TransferLedgerHealthStatus = historyCoverageStatus === 'PARTIAL'
-        ? 'AVAILABLE_PARTIAL_HISTORY'
-        : 'AVAILABLE_ZERO_QUALIFYING_DATA';
+      const healthStatus = this.healthForEvidenceState(sourceProvenance.evidenceState, 'AVAILABLE_ZERO_QUALIFYING_DATA');
       await this.persistSourceRun({
         input,
         sourceRunId,
@@ -199,8 +276,9 @@ export class TransferLedgerObservationService {
         historyCoverageStatus,
         observationCount: 0,
         ambiguityCount: 0,
+        provenance: sourceProvenance,
       });
-      return this.toResult(sourceRunId, healthStatus, historyCoverageStatus, 0, 0);
+      return this.toResult(sourceRunId, healthStatus, historyCoverageStatus, 0, 0, undefined, undefined, sourceProvenance);
     }
 
     const exactRows = rows.filter(row => isExactWhseTransfersEvent(row.provider_event_type_raw));
@@ -208,11 +286,10 @@ export class TransferLedgerObservationService {
 
     if (exactRows.length === 0) {
       const hasUnsupportedTransferLikeRows = transferLikeRows.length > 0;
-      const healthStatus: TransferLedgerHealthStatus = hasUnsupportedTransferLikeRows
-        ? 'UNSUPPORTED_EVENT_SEMANTICS'
-        : historyCoverageStatus === 'PARTIAL'
-          ? 'AVAILABLE_PARTIAL_HISTORY'
-          : 'AVAILABLE_ZERO_QUALIFYING_DATA';
+      const healthStatus = this.healthForEvidenceState(
+        sourceProvenance.evidenceState,
+        hasUnsupportedTransferLikeRows ? 'UNSUPPORTED_EVENT_SEMANTICS' : 'AVAILABLE_ZERO_QUALIFYING_DATA',
+      );
       await this.persistSourceRun({
         input,
         sourceRunId,
@@ -225,6 +302,7 @@ export class TransferLedgerObservationService {
         errorMessage: hasUnsupportedTransferLikeRows
           ? 'Transfer-like Ledger events were preserved but do not match the exact WhseTransfers taxonomy.'
           : undefined,
+        provenance: sourceProvenance,
       });
       return this.toResult(
         sourceRunId,
@@ -234,6 +312,7 @@ export class TransferLedgerObservationService {
         0,
         hasUnsupportedTransferLikeRows ? 'NON_WHSETRANSFERS_TRANSFER_EVENT' : undefined,
         hasUnsupportedTransferLikeRows ? 'Transfer-like Ledger events were preserved but do not match the exact WhseTransfers taxonomy.' : undefined,
+        sourceProvenance,
       );
     }
 
@@ -254,8 +333,9 @@ export class TransferLedgerObservationService {
         ambiguityCount: 0,
         errorClass: normalized.code,
         errorMessage: normalized.message,
+        provenance: sourceProvenance,
       });
-      return this.toResult(sourceRunId, 'PARSER_FAILURE', historyCoverageStatus, 0, 0, normalized.code, normalized.message);
+      return this.toResult(sourceRunId, 'PARSER_FAILURE', historyCoverageStatus, 0, 0, normalized.code, normalized.message, sourceProvenance);
     }
 
     const referenceCounts = new Map<string, number>();
@@ -278,11 +358,10 @@ export class TransferLedgerObservationService {
       return { ...row, observation_state: observationState };
     });
 
-    const finalHealthStatus: TransferLedgerHealthStatus = historyCoverageStatus === 'PARTIAL'
-      ? 'AVAILABLE_PARTIAL_HISTORY'
-      : ambiguityCount > 0
-        ? 'AMBIGUOUS_TRANSFER_EVIDENCE'
-        : 'AVAILABLE_DATA';
+    const finalHealthStatus = this.healthForEvidenceState(
+      sourceProvenance.evidenceState,
+      ambiguityCount > 0 ? 'AMBIGUOUS_TRANSFER_EVIDENCE' : 'AVAILABLE_DATA',
+    );
 
     // Persist source-run provenance before dependent observations so the
     // foreign key is valid and every row is traceable to one attempt.
@@ -294,6 +373,7 @@ export class TransferLedgerObservationService {
       historyCoverageStatus,
       observationCount: observations.length,
       ambiguityCount,
+      provenance: sourceProvenance,
     });
 
     try {
@@ -314,7 +394,7 @@ export class TransferLedgerObservationService {
         completed_at: observedAt.toISOString(),
         updated_at: observedAt.toISOString(),
       });
-      return this.toResult(sourceRunId, 'PARSER_FAILURE', historyCoverageStatus, 0, 0, 'OBSERVATION_PERSISTENCE_FAILURE', message);
+      return this.toResult(sourceRunId, 'PARSER_FAILURE', historyCoverageStatus, 0, 0, 'OBSERVATION_PERSISTENCE_FAILURE', message, sourceProvenance);
     }
 
     const healthStatus = finalHealthStatus;
@@ -333,7 +413,7 @@ export class TransferLedgerObservationService {
       claimCapable: false,
     });
 
-    return this.toResult(sourceRunId, healthStatus, historyCoverageStatus, observations.length, ambiguityCount);
+    return this.toResult(sourceRunId, healthStatus, historyCoverageStatus, observations.length, ambiguityCount, undefined, undefined, sourceProvenance);
   }
 
   private toObservationRow(
@@ -390,8 +470,9 @@ export class TransferLedgerObservationService {
     ambiguityCount: number;
     errorClass?: string;
     errorMessage?: string | null;
+    provenance: TransferLedgerEvidenceProvenance;
   }): Promise<void> {
-    const { input, sourceRunId, observedAt, healthStatus, historyCoverageStatus, observationCount, ambiguityCount, errorClass, errorMessage } = args;
+    const { input, sourceRunId, observedAt, healthStatus, historyCoverageStatus, observationCount, ambiguityCount, errorClass, errorMessage, provenance } = args;
     const { error } = await this.db
       .from('transfer_ledger_source_runs')
       .insert({
@@ -417,6 +498,10 @@ export class TransferLedgerObservationService {
           ledger_sync_count: input.ledgerResult.count,
           claim_capable: false,
           reads_existing_ledger_only: true,
+          source_fingerprint: provenance.sourceFingerprint,
+          origin_classification: provenance.origin,
+          evidence_state: provenance.evidenceState,
+          execution_context: provenance.executionContext,
         },
         started_at: observedAt.toISOString(),
         completed_at: observedAt.toISOString(),
@@ -449,7 +534,11 @@ export class TransferLedgerObservationService {
     ambiguityCount: number,
     errorClass?: string,
     errorMessage?: string,
+    provenance?: TransferLedgerEvidenceProvenance,
   ): TransferLedgerObservationResult {
+    if (!provenance) {
+      throw new TransferLedgerObservationError('Observation provenance is required for every result.', 'MISSING_OBSERVATION_PROVENANCE');
+    }
     return {
       sourceRunId,
       healthStatus,
@@ -457,6 +546,7 @@ export class TransferLedgerObservationService {
       observationCount,
       ambiguityCount,
       claimCapable: false,
+      provenance,
       errorClass,
       errorMessage,
     };
