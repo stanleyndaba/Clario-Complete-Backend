@@ -28,6 +28,8 @@ import {
   type SyntheticAuditExecutionContext,
 } from './syntheticAuditExecutionContext';
 
+const complimentaryAuditCooldownEnabled = process.env.COMPLIMENTARY_AUDIT_COOLDOWN_ENABLED === 'true';
+
 type AuditRunStatus =
   | 'created'
   | 'amazon_connection_required'
@@ -885,6 +887,7 @@ class AuditRunService {
       }
 
       if (
+        complimentaryAuditCooldownEnabled &&
         latestAudit.status === 'completed' &&
         latestAudit.next_eligible_at &&
         new Date(latestAudit.next_eligible_at).getTime() > Date.now()
@@ -1019,7 +1022,7 @@ class AuditRunService {
       });
       return;
     }
-    if (!previousAudit?.next_eligible_at) return;
+    if (!complimentaryAuditCooldownEnabled || !previousAudit?.next_eligible_at) return;
 
     const nextEligibleAt = new Date(previousAudit.next_eligible_at).getTime();
     if (!Number.isFinite(nextEligibleAt) || nextEligibleAt <= Date.now()) return;

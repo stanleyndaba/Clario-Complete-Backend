@@ -50,6 +50,7 @@ function queryResult(result: any) {
     neq: jest.fn(() => chain),
     order: jest.fn(() => chain),
     limit: jest.fn(() => chain),
+    insert: jest.fn(() => chain),
     maybeSingle: jest.fn(async () => result),
     single: jest.fn(async () => result),
   };
@@ -107,7 +108,18 @@ describe('auditRunService CSV upload audit rail', () => {
     expect(service.getLatestCompletedAudit).toHaveBeenCalledWith('user-1', 'tenant-1', 'audit-csv-1');
   });
 
-  it('blocks a genuinely new CSV audit inside the global 30-day complimentary window', async () => {
+  it('allows a genuinely new CSV audit inside the former global 30-day complimentary window', async () => {
+    const insertedAudit = {
+      id: 'audit-csv-456',
+      user_id: 'user-1',
+      tenant_id: 'tenant-1',
+      source_type: 'csv_upload',
+      sync_id: 'csv_456',
+      status: 'detecting',
+      activation_status: 'not_activated',
+      summary: {},
+    };
+
     service.getCsvUploadRunForAudit = jest.fn(async () => ({
       sync_id: 'csv_456',
       tenant_id: 'tenant-1',
@@ -122,17 +134,19 @@ describe('auditRunService CSV upload audit rail', () => {
       status: 'completed',
       next_eligible_at: '2999-01-01T00:00:00.000Z',
     }));
-    service.updateAudit = jest.fn();
 
-    (supabaseAdmin.from as any).mockReturnValueOnce(queryResult({ data: null, error: null }));
+    (supabaseAdmin.from as any)
+      .mockReturnValueOnce(queryResult({ data: null, error: null }))
+      .mockReturnValueOnce(queryResult({ data: insertedAudit, error: null }));
 
-    await expect(auditRunService.createOrResumeCsvAuditFromSync({
+    const result = await auditRunService.createOrResumeCsvAuditFromSync({
       userId: 'user-1',
       tenantId: 'tenant-1',
       syncId: 'csv_456',
-    })).rejects.toThrow('next complimentary manual report audit');
+    });
 
-    expect(service.updateAudit).not.toHaveBeenCalled();
+    expect(result.id).toBe('audit-csv-456');
+    expect(result.status).toBe('detecting');
   });
 
   it('polls a CSV audit from runAudit without entering Amazon connection logic', async () => {
