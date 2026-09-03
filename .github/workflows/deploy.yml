@@ -1,4 +1,4 @@
-name: Deploy Integrations Backend
+name: Validate and Verify Render Backend
 
 on:
   push:
@@ -30,25 +30,14 @@ jobs:
             tests/utils/oauthStateStore.auditIntent.test.ts \
             tests/services/inboundInspectorP1Regression.test.ts
 
-  deploy-integrations-backend:
+  verify-render-backend:
     needs: test-integrations-release
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production'
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Fly.io CLI
-        uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Deploy integrations backend
+      - name: Verify Render backend health
         run: |
-          cd Integrations-backend
-          flyctl deploy -a opside-integrations-backend
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
-      - name: Verify integrations backend health
-        run: |
-          sleep 60
-          curl --fail --retry 5 --retry-delay 5 https://opside-integrations-backend.fly.dev/health
+          curl --fail --retry 12 --retry-delay 10 \
+            --retry-connrefused \
+            https://opside-node-api-woco.onrender.com/health
