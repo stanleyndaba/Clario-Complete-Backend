@@ -387,6 +387,9 @@ logger.info('Documents routes registered at /api/documents');
 import csvUploadRoutes from './routes/csvUploadRoutes';
 app.use('/api/csv-upload', csvUploadRoutes);
 logger.info('CSV Upload routes registered at /api/csv-upload');
+import informationRequiredRoutes from './routes/informationRequiredRoutes';
+app.use('/api/information-required', informationRequiredRoutes);
+logger.info('Information-required routes registered at /api/information-required');
 
 // Revenue routes (reimbursement matching, commission invoices, payment methods)
 import revenueRoutes from './routes/revenueRoutes';
