@@ -45,31 +45,49 @@ function safeFilename(name: string) {
   return `${base}${extension}`;
 }
 
+type EmailDeliveryStatus = 'sent' | 'skipped' | 'failed';
+
 async function sendSubmissionEmails(input: { email: string | null; tenantId: string; userId: string; auditId: string; submissionId: string; filenames: string[]; note: string | null }) {
   const submittedAt = new Date().toISOString();
   const details = input.filenames.join(', ');
-  const sellerTasks: Promise<unknown>[] = [];
+  const sellerTasks: Array<{ kind: 'seller' | 'internal'; task: Promise<unknown> }> = [];
   if (input.email) {
-    sellerTasks.push(emailService.sendEmail({
+    sellerTasks.push({ kind: 'seller', task: emailService.sendEmail({
       to: input.email,
       subject: 'We received your files',
       text: "We've received the additional Amazon records for your Margin Audit. Our team will review them and use them to complete your report.\n\nWe'll be in touch once the review is complete.\n\n— Margin",
       html: '<p>We\'ve received the additional Amazon records for your Margin Audit. Our team will review them and use them to complete your report.</p><p>We\'ll be in touch once the review is complete.</p><p>— Margin</p>',
       idempotencyKey: `information-required-seller:${input.submissionId}`,
-    }));
+    }) });
   }
   const internalEmail = process.env.INFORMATION_REQUIRED_INTERNAL_EMAIL || process.env.INTERNAL_NOTIFICATION_EMAIL || process.env.EMAIL_REPLY_TO;
   if (internalEmail) {
-    sellerTasks.push(emailService.sendEmail({
+    sellerTasks.push({ kind: 'internal', task: emailService.sendEmail({
       to: internalEmail,
       subject: `New information-required submission: ${input.auditId}`,
       text: `A seller submitted additional records.\n\nUser: ${input.userId}\nTenant: ${input.tenantId}\nAudit: ${input.auditId}\nSubmitted: ${submittedAt}\nFiles: ${details}\nNote: ${input.note || 'Not provided'}`,
       html: `<p>A seller submitted additional records.</p><ul><li>User: ${input.userId}</li><li>Tenant: ${input.tenantId}</li><li>Audit: ${input.auditId}</li><li>Submitted: ${submittedAt}</li><li>Files: ${details}</li></ul><p>Note: ${input.note || 'Not provided'}</p>`,
       idempotencyKey: `information-required-internal:${input.submissionId}`,
-    }));
+    }) });
   }
-  const results = await Promise.allSettled(sellerTasks);
-  results.filter((result) => result.status === 'rejected').forEach((result) => logger.warn('[INFORMATION REQUIRED] Notification failed after durable submission', { error: result.reason?.message || String(result.reason) }));
+  const statuses: { seller: EmailDeliveryStatus; internal: EmailDeliveryStatus } = {
+    seller: input.email ? 'failed' : 'skipped',
+    internal: internalEmail ? 'failed' : 'skipped',
+  };
+  const results = await Promise.allSettled(sellerTasks.map(({ task }) => task));
+  results.forEach((result, index) => {
+    const kind = sellerTasks[index].kind;
+    if (result.status === 'fulfilled') {
+      statuses[kind] = 'sent';
+      return;
+    }
+    logger.error('[INFORMATION REQUIRED] Notification failed after durable submission', {
+      channel: kind,
+      submissionId: input.submissionId,
+      error: result.reason?.message || String(result.reason),
+    });
+  });
+  return statuses;
 }
 
 router.get('/', async (req: Request, res: Response) => {
@@ -140,12 +158,15 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
       await db.from('information_required_submissions').delete().eq('id', submission.id);
       return res.status(500).json({ success: false, error: fileError?.message || 'Files could not be stored. Please try again.' });
     }
-    const { data: currentAudit } = await db.from('audit_runs').select('summary').eq('id', auditId).single();
+    const { data: currentAudit, error: currentAuditError } = await db.from('audit_runs').select('summary').eq('id', auditId).single();
+    if (currentAuditError || !currentAudit) throw new Error(currentAuditError?.message || 'Audit could not be loaded for review state update.');
     const summary = currentAudit?.summary && typeof currentAudit.summary === 'object' ? currentAudit.summary : {};
-    await db.from('audit_runs').update({ summary: { ...summary, information_required: { status: 'review_pending', submission_id: submission.id, submitted_at: submission.submitted_at, file_count: saved.length } }, updated_at: new Date().toISOString() }).eq('id', auditId).eq('tenant_id', tenantId).eq('user_id', userId);
-    const { data: user } = await db.from('users').select('email').eq('id', convertUserIdToUuid(userId)).maybeSingle();
-    void sendSubmissionEmails({ email: user?.email || null, tenantId, userId, auditId, submissionId: submission.id, filenames: files.map((file) => file.originalname), note: submission.note }).catch((error) => logger.warn('[INFORMATION REQUIRED] Notification dispatch failed', { error: error?.message || String(error) }));
-    return res.status(201).json({ success: true, submission: { id: submission.id, status: submission.status, submitted_at: submission.submitted_at }, files: saved, message: 'Files received. Our review team has received your files.' });
+    const { error: summaryError } = await db.from('audit_runs').update({ summary: { ...summary, information_required: { status: 'review_pending', submission_id: submission.id, submitted_at: submission.submitted_at, file_count: saved.length } }, updated_at: new Date().toISOString() }).eq('id', auditId).eq('tenant_id', tenantId).eq('user_id', userId);
+    if (summaryError) throw new Error(summaryError.message);
+    const { data: user, error: userError } = await db.from('users').select('email').eq('id', convertUserIdToUuid(userId)).maybeSingle();
+    if (userError) logger.error('[INFORMATION REQUIRED] Seller email lookup failed after durable submission', { submissionId: submission.id, error: userError.message });
+    const emailDelivery = await sendSubmissionEmails({ email: user?.email || null, tenantId, userId, auditId, submissionId: submission.id, filenames: files.map((file) => file.originalname), note: submission.note });
+    return res.status(201).json({ success: true, submission: { id: submission.id, status: submission.status, submitted_at: submission.submitted_at }, files: saved, emailDelivery, message: 'Files received. Our review team has received your files.' });
   } catch (error: any) {
     logger.error('[INFORMATION REQUIRED] Submission failed', { error: error?.message || String(error) });
     return res.status(500).json({ success: false, error: 'We could not receive these files. Please try again.' });
