@@ -10,6 +10,12 @@ const emailService = new EmailService();
 const BUCKET = 'evidence-documents';
 const MAX_FILES = 10;
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
+type UploadedInformationFile = {
+  originalname: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+};
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -95,7 +101,7 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
     if (!userId || !tenantId) return res.status(401).json({ success: false, error: 'Authenticated tenant context is required.' });
     const auditId = String(req.body?.auditId || req.query?.auditId || '').trim();
     if (!auditId) return res.status(400).json({ success: false, error: 'An audit is required for this submission.' });
-    const files = ((req.files || []) as Express.Multer.File[]);
+    const files = ((req.files || []) as UploadedInformationFile[]);
     if (!files.length) return res.status(400).json({ success: false, error: 'Add at least one file to continue.' });
     const db = supabaseAdmin || supabase;
     const { data: audit, error: auditError } = await db.from('audit_runs').select('id, status, user_id, tenant_id').eq('id', auditId).eq('user_id', userId).eq('tenant_id', tenantId).maybeSingle();
