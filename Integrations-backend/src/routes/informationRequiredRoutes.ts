@@ -33,7 +33,11 @@ const upload = multer({
 });
 
 function storageClient(): any | null {
-  return supabaseStorage?.storage ? supabaseStorage : supabaseAdmin?.storage ? supabaseAdmin : supabase?.storage ? supabase : null;
+  if (supabaseStorage?.from && !supabaseStorage?.storage) return { storage: supabaseStorage };
+  if (supabaseStorage?.storage) return supabaseStorage;
+  if (supabaseAdmin?.storage) return supabaseAdmin;
+  if (supabase?.storage) return supabase;
+  return null;
 }
 
 function safeFilename(name: string) {
@@ -115,14 +119,15 @@ router.get('/', async (req: Request, res: Response) => {
     const tenantId = String((req as any).tenant?.tenantId || '');
     const auditId = String(req.query.auditId || '').trim();
     if (!userId || !tenantId) return res.status(401).json({ success: false, error: 'Authenticated tenant context is required.' });
+    const userUuid = convertUserIdToUuid(userId);
     const db = supabaseAdmin || supabase;
-    let auditQuery = db.from('audit_runs').select('id, status, source_type, summary, created_at, updated_at').eq('user_id', userId).eq('tenant_id', tenantId).order('created_at', { ascending: false }).limit(1);
-    if (auditId) auditQuery = db.from('audit_runs').select('id, status, source_type, summary, created_at, updated_at').eq('id', auditId).eq('user_id', userId).eq('tenant_id', tenantId).limit(1);
+    let auditQuery = db.from('audit_runs').select('id, status, source_type, summary, created_at, updated_at').eq('user_id', userUuid).eq('tenant_id', tenantId).order('created_at', { ascending: false }).limit(1);
+    if (auditId) auditQuery = db.from('audit_runs').select('id, status, source_type, summary, created_at, updated_at').eq('id', auditId).eq('user_id', userUuid).eq('tenant_id', tenantId).limit(1);
     const { data: audits, error: auditError } = await auditQuery;
     if (auditError) throw new Error(auditError.message);
     const audit = audits?.[0] || null;
     if (!audit) return res.status(404).json({ success: false, error: 'Audit not found.' });
-    const { data: submission, error } = await db.from('information_required_submissions').select('id, audit_run_id, note, status, submitted_at, created_at, updated_at').eq('audit_run_id', audit.id).eq('tenant_id', tenantId).eq('user_id', userId).maybeSingle();
+    const { data: submission, error } = await db.from('information_required_submissions').select('id, audit_run_id, note, status, submitted_at, created_at, updated_at').eq('audit_run_id', audit.id).eq('tenant_id', tenantId).eq('user_id', userUuid).maybeSingle();
     if (error) throw new Error(error.message);
     return res.json({ success: true, audit, submission: submission || null });
   } catch (error: any) {
@@ -136,23 +141,24 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
     const userId = String((req as any).userId || '');
     const tenantId = String((req as any).tenant?.tenantId || '');
     if (!userId || !tenantId) return res.status(401).json({ success: false, error: 'Authenticated tenant context is required.' });
+    const userUuid = convertUserIdToUuid(userId);
     const auditId = String(req.body?.auditId || req.query?.auditId || '').trim();
     if (!auditId) return res.status(400).json({ success: false, error: 'An audit is required for this submission.' });
     const files = ((req.files || []) as UploadedInformationFile[]);
     if (!files.length) return res.status(400).json({ success: false, error: 'Add at least one file to continue.' });
     const db = supabaseAdmin || supabase;
-    const { data: audit, error: auditError } = await db.from('audit_runs').select('id, status, user_id, tenant_id').eq('id', auditId).eq('user_id', userId).eq('tenant_id', tenantId).maybeSingle();
+    const { data: audit, error: auditError } = await db.from('audit_runs').select('id, status, user_id, tenant_id').eq('id', auditId).eq('user_id', userUuid).eq('tenant_id', tenantId).maybeSingle();
     if (auditError) throw new Error(auditError.message);
     if (!audit) return res.status(404).json({ success: false, error: 'Audit not found.' });
-    const { data: existing, error: existingError } = await db.from('information_required_submissions').select('id, status, submitted_at').eq('audit_run_id', auditId).eq('tenant_id', tenantId).eq('user_id', userId).maybeSingle();
+    const { data: existing, error: existingError } = await db.from('information_required_submissions').select('id, status, submitted_at').eq('audit_run_id', auditId).eq('tenant_id', tenantId).eq('user_id', userUuid).maybeSingle();
     if (existingError) throw new Error(existingError.message);
     if (existing) return res.json({ success: true, duplicate: true, submission: existing, message: 'Your files were already received.' });
     const storage = storageClient();
     if (!storage) return res.status(503).json({ success: false, error: 'File storage is temporarily unavailable. Please try again.' });
-    const { data: submission, error: submissionError } = await db.from('information_required_submissions').insert({ audit_run_id: auditId, tenant_id: tenantId, user_id: convertUserIdToUuid(userId), note: typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 4000) || null : null }).select('*').single();
+    const { data: submission, error: submissionError } = await db.from('information_required_submissions').insert({ audit_run_id: auditId, tenant_id: tenantId, user_id: userUuid, note: typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 4000) || null : null }).select('*').single();
     if (submissionError) {
       if (submissionError.code === '23505') {
-        const { data: raced } = await db.from('information_required_submissions').select('id, status, submitted_at').eq('audit_run_id', auditId).eq('tenant_id', tenantId).eq('user_id', userId).maybeSingle();
+        const { data: raced } = await db.from('information_required_submissions').select('id, status, submitted_at').eq('audit_run_id', auditId).eq('tenant_id', tenantId).eq('user_id', userUuid).maybeSingle();
         return res.json({ success: true, duplicate: true, submission: raced || null, message: 'Your files were already received.' });
       }
       throw new Error(submissionError.message);
@@ -166,7 +172,7 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
         const { error: uploadError } = await storage.storage.from(BUCKET).upload(storagePath, file.buffer, { contentType: file.mimetype, upsert: false });
         if (uploadError) throw new Error(`Could not store ${file.originalname}.`);
         uploadedStoragePaths.push(storagePath);
-        const { data: document, error: documentError } = await db.from('evidence_documents').insert({ id: documentId, user_id: convertUserIdToUuid(userId), tenant_id: tenantId, seller_id: tenantId, external_id: `information_required:${submission.id}:${documentId}`, doc_type: 'other', filename: file.originalname, original_filename: file.originalname, content_type: file.mimetype, mime_type: file.mimetype, size_bytes: file.size, storage_path: storagePath, processing_status: 'pending', parser_status: 'pending', provider: 'information_required', ingested_at: new Date().toISOString(), information_required_submission_id: submission.id, metadata: { source: 'information_required', audit_run_id: auditId, submission_id: submission.id, original_filename: file.originalname } }).select('id, filename, size_bytes, content_type').single();
+        const { data: document, error: documentError } = await db.from('evidence_documents').insert({ id: documentId, user_id: userUuid, tenant_id: tenantId, seller_id: tenantId, external_id: `information_required:${submission.id}:${documentId}`, doc_type: 'other', filename: file.originalname, original_filename: file.originalname, content_type: file.mimetype, mime_type: file.mimetype, size_bytes: file.size, storage_path: storagePath, processing_status: 'pending', parser_status: 'pending', provider: 'information_required', ingested_at: new Date().toISOString(), information_required_submission_id: submission.id, metadata: { source: 'information_required', audit_run_id: auditId, submission_id: submission.id, original_filename: file.originalname } }).select('id, filename, size_bytes, content_type').single();
         if (documentError) throw new Error(`Could not record ${file.originalname}.`);
         saved.push(document);
       }
@@ -206,7 +212,7 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
         });
       }
     }
-    const { data: user, error: userError } = await db.from('users').select('email').eq('id', convertUserIdToUuid(userId)).maybeSingle();
+    const { data: user, error: userError } = await db.from('users').select('email').eq('id', userUuid).maybeSingle();
     if (userError) logger.error('[INFORMATION REQUIRED] Seller email lookup failed after durable submission', { submissionId: submission.id, error: userError.message });
     const emailDelivery = await sendSubmissionEmails({ email: user?.email || null, tenantId, userId, auditId, submissionId: submission.id, filenames: files.map((file) => file.originalname), note: submission.note });
     return res.status(201).json({ success: true, submission: { id: submission.id, status: submission.status, submitted_at: submission.submitted_at }, files: saved, emailDelivery, message: 'Files received. Our review team has received your files.' });
