@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { supabase, supabaseAdmin, supabaseStorage, convertUserIdToUuid } from '../database/supabaseClient';
@@ -38,6 +38,48 @@ function storageClient(): any | null {
   if (supabaseAdmin?.storage) return supabaseAdmin;
   if (supabase?.storage) return supabase;
   return null;
+}
+
+const INFORMATION_REQUIRED_MIME_TYPES = [
+  'text/csv',
+  'text/plain',
+  'application/csv',
+  'application/pdf',
+  'application/octet-stream',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+];
+
+async function ensureEvidenceDocumentsBucket(storage: any): Promise<void> {
+  try {
+    const { data: buckets, error: listError } = await storage.storage.listBuckets();
+    if (listError) {
+      logger.warn('[INFORMATION REQUIRED] Could not list evidence storage buckets', { error: listError.message });
+      return;
+    }
+    const bucketExists = buckets?.some((bucket: { name: string }) => bucket.name === BUCKET);
+    if (!bucketExists) {
+      const { error: createError } = await storage.storage.createBucket(BUCKET, {
+        public: false,
+        fileSizeLimit: MAX_FILE_SIZE,
+        allowedMimeTypes: INFORMATION_REQUIRED_MIME_TYPES,
+      });
+      if (createError && !/already exists/i.test(createError.message || '')) {
+        logger.warn('[INFORMATION REQUIRED] Could not create evidence storage bucket', { error: createError.message });
+        return;
+      }
+    }
+    const { error: updateError } = await storage.storage.updateBucket(BUCKET, {
+      public: false,
+      fileSizeLimit: MAX_FILE_SIZE,
+      allowedMimeTypes: INFORMATION_REQUIRED_MIME_TYPES,
+    });
+    if (updateError) {
+      logger.warn('[INFORMATION REQUIRED] Could not update evidence storage bucket mime types', { error: updateError.message });
+    }
+  } catch (error: any) {
+    logger.warn('[INFORMATION REQUIRED] Evidence storage bucket check failed', { error: error?.message || String(error) });
+  }
 }
 
 function safeFilename(name: string) {
@@ -136,7 +178,15 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, res: Response) => {
+router.post('/submit', (req: Request, res: Response, next: NextFunction) => {
+  upload.array('files', MAX_FILES)(req, res, (err: any) => {
+    if (!err) return next();
+    const message = err.code === 'LIMIT_FILE_SIZE'
+      ? 'This file is larger than 25 MB. Please choose a smaller file.'
+      : err.message || 'Those files could not be uploaded. Please try again.';
+    return res.status(400).json({ success: false, error: message });
+  });
+}, async (req: Request, res: Response) => {
   try {
     const userId = String((req as any).userId || '');
     const tenantId = String((req as any).tenant?.tenantId || '');
@@ -155,6 +205,7 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
     if (existing) return res.json({ success: true, duplicate: true, submission: existing, message: 'Your files were already received.' });
     const storage = storageClient();
     if (!storage) return res.status(503).json({ success: false, error: 'File storage is temporarily unavailable. Please try again.' });
+    await ensureEvidenceDocumentsBucket(storage);
     const { data: submission, error: submissionError } = await db.from('information_required_submissions').insert({ audit_run_id: auditId, tenant_id: tenantId, user_id: userUuid, note: typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 4000) || null : null }).select('*').single();
     if (submissionError) {
       if (submissionError.code === '23505') {
@@ -169,11 +220,20 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
       for (const file of files) {
         const documentId = uuidv4();
         const storagePath = `${tenantId}/${documentId}/${safeFilename(file.originalname)}`;
-        const { error: uploadError } = await storage.storage.from(BUCKET).upload(storagePath, file.buffer, { contentType: file.mimetype, upsert: false });
-        if (uploadError) throw new Error(`Could not store ${file.originalname}.`);
+        const contentType = file.mimetype && file.mimetype !== 'application/octet-stream'
+          ? file.mimetype
+          : (file.originalname.toLowerCase().endsWith('.csv') ? 'text/csv' : file.mimetype || 'application/octet-stream');
+        const { error: uploadError } = await storage.storage.from(BUCKET).upload(storagePath, file.buffer, { contentType, upsert: false });
+        if (uploadError) {
+          logger.error('[INFORMATION REQUIRED] Storage upload failed', { filename: file.originalname, contentType, error: uploadError.message });
+          throw new Error(`Could not store ${file.originalname}: ${uploadError.message}`);
+        }
         uploadedStoragePaths.push(storagePath);
-        const { data: document, error: documentError } = await db.from('evidence_documents').insert({ id: documentId, user_id: userUuid, tenant_id: tenantId, seller_id: tenantId, external_id: `information_required:${submission.id}:${documentId}`, doc_type: 'other', filename: file.originalname, original_filename: file.originalname, content_type: file.mimetype, mime_type: file.mimetype, size_bytes: file.size, storage_path: storagePath, processing_status: 'pending', parser_status: 'pending', provider: 'information_required', ingested_at: new Date().toISOString(), information_required_submission_id: submission.id, metadata: { source: 'information_required', audit_run_id: auditId, submission_id: submission.id, original_filename: file.originalname } }).select('id, filename, size_bytes, content_type').single();
-        if (documentError) throw new Error(`Could not record ${file.originalname}.`);
+        const { data: document, error: documentError } = await db.from('evidence_documents').insert({ id: documentId, user_id: userUuid, tenant_id: tenantId, seller_id: tenantId, external_id: `information_required:${submission.id}:${documentId}`, doc_type: 'other', filename: file.originalname, original_filename: file.originalname, content_type: contentType, mime_type: contentType, size_bytes: file.size, storage_path: storagePath, processing_status: 'pending', parser_status: 'pending', provider: 'information_required', ingested_at: new Date().toISOString(), information_required_submission_id: submission.id, metadata: { source: 'information_required', audit_run_id: auditId, submission_id: submission.id, original_filename: file.originalname } }).select('id, filename, size_bytes, content_type').single();
+        if (documentError) {
+          logger.error('[INFORMATION REQUIRED] Document insert failed', { filename: file.originalname, error: documentError.message });
+          throw new Error(`Could not record ${file.originalname}: ${documentError.message}`);
+        }
         saved.push(document);
       }
     } catch (fileError: any) {
@@ -214,11 +274,32 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
     }
     const { data: user, error: userError } = await db.from('users').select('email').eq('id', userUuid).maybeSingle();
     if (userError) logger.error('[INFORMATION REQUIRED] Seller email lookup failed after durable submission', { submissionId: submission.id, error: userError.message });
-    const emailDelivery = await sendSubmissionEmails({ email: user?.email || null, tenantId, userId, auditId, submissionId: submission.id, filenames: files.map((file) => file.originalname), note: submission.note });
+    let emailDelivery: { seller: EmailDeliveryResult; internal: EmailDeliveryResult } = {
+      seller: { status: 'skipped' },
+      internal: { status: 'skipped' },
+    };
+    try {
+      emailDelivery = await sendSubmissionEmails({ email: user?.email || null, tenantId, userId, auditId, submissionId: submission.id, filenames: files.map((file) => file.originalname), note: submission.note });
+    } catch (emailError: any) {
+      logger.error('[INFORMATION REQUIRED] Notification threw after durable submission', {
+        submissionId: submission.id,
+        error: emailError?.message || String(emailError),
+      });
+      emailDelivery = {
+        seller: user?.email ? { status: 'failed', error: emailError?.message || String(emailError) } : { status: 'skipped' },
+        internal: { status: 'failed', error: emailError?.message || String(emailError) },
+      };
+    }
     return res.status(201).json({ success: true, submission: { id: submission.id, status: submission.status, submitted_at: submission.submitted_at }, files: saved, emailDelivery, message: 'Files received. Our review team has received your files.' });
   } catch (error: any) {
     logger.error('[INFORMATION REQUIRED] Submission failed', { error: error?.message || String(error) });
-    return res.status(500).json({ success: false, error: 'We could not receive these files. Please try again.' });
+    const detail = String(error?.message || '').trim().slice(0, 280);
+    return res.status(500).json({
+      success: false,
+      error: detail
+        ? `We could not receive these files. ${detail}`
+        : 'We could not receive these files. Please try again.',
+    });
   }
 });
 
