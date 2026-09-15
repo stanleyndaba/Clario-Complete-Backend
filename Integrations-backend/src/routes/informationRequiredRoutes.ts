@@ -46,6 +46,12 @@ function safeFilename(name: string) {
 }
 
 type EmailDeliveryStatus = 'sent' | 'skipped' | 'failed';
+type EmailDeliveryResult = {
+  status: EmailDeliveryStatus;
+  provider?: 'resend';
+  providerMessageId?: string | null;
+  error?: string;
+};
 
 async function sendSubmissionEmails(input: { email: string | null; tenantId: string; userId: string; auditId: string; submissionId: string; filenames: string[]; note: string | null }) {
   const submittedAt = new Date().toISOString();
@@ -70,21 +76,34 @@ async function sendSubmissionEmails(input: { email: string | null; tenantId: str
       idempotencyKey: `information-required-internal:${input.submissionId}`,
     }) });
   }
-  const statuses: { seller: EmailDeliveryStatus; internal: EmailDeliveryStatus } = {
-    seller: input.email ? 'failed' : 'skipped',
-    internal: internalEmail ? 'failed' : 'skipped',
+  const statuses: { seller: EmailDeliveryResult; internal: EmailDeliveryResult } = {
+    seller: input.email ? { status: 'failed' } : { status: 'skipped' },
+    internal: internalEmail ? { status: 'failed' } : { status: 'skipped' },
   };
   const results = await Promise.allSettled(sellerTasks.map(({ task }) => task));
   results.forEach((result, index) => {
     const kind = sellerTasks[index].kind;
     if (result.status === 'fulfilled') {
-      statuses[kind] = 'sent';
+      const value = result.value as { provider?: 'resend'; providerMessageId?: string | null } | undefined;
+      statuses[kind] = {
+        status: 'sent',
+        provider: value?.provider || 'resend',
+        providerMessageId: value?.providerMessageId || null,
+      };
+      logger.info('[INFORMATION REQUIRED] Notification accepted by provider', {
+        channel: kind,
+        submissionId: input.submissionId,
+        provider: statuses[kind].provider,
+        providerMessageId: statuses[kind].providerMessageId,
+      });
       return;
     }
+    const error = result.reason?.message || String(result.reason);
+    statuses[kind] = { status: 'failed', error };
     logger.error('[INFORMATION REQUIRED] Notification failed after durable submission', {
       channel: kind,
       submissionId: input.submissionId,
-      error: result.reason?.message || String(result.reason),
+      error,
     });
   });
   return statuses;
