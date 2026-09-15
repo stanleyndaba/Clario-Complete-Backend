@@ -222,11 +222,35 @@ router.post('/submit', (req: Request, res: Response, next: NextFunction) => {
         const storagePath = `${tenantId}/${documentId}/${safeFilename(file.originalname)}`;
         const contentType = file.mimetype && file.mimetype !== 'application/octet-stream'
           ? file.mimetype
-          : (file.originalname.toLowerCase().endsWith('.csv') ? 'text/csv' : file.mimetype || 'application/octet-stream');
-        const { error: uploadError } = await storage.storage.from(BUCKET).upload(storagePath, file.buffer, { contentType, upsert: false });
+          : (file.originalname.toLowerCase().endsWith('.pdf')
+            ? 'application/pdf'
+            : file.originalname.toLowerCase().endsWith('.csv')
+              ? 'text/csv'
+              : file.mimetype || 'application/octet-stream');
+        // Node/undici often fails on raw Buffer bodies with "fetch failed"; Uint8Array is the stable body shape.
+        const fileBody = file.buffer instanceof Uint8Array
+          ? (Buffer.isBuffer(file.buffer) ? new Uint8Array(file.buffer) : file.buffer)
+          : new Uint8Array(file.buffer);
+        const { error: uploadError } = await storage.storage.from(BUCKET).upload(storagePath, fileBody, { contentType, upsert: false });
         if (uploadError) {
-          logger.error('[INFORMATION REQUIRED] Storage upload failed', { filename: file.originalname, contentType, error: uploadError.message });
-          throw new Error(`Could not store ${file.originalname}: ${uploadError.message}`);
+          const cause = (uploadError as any)?.originalError?.cause?.message
+            || (uploadError as any)?.originalError?.message
+            || (uploadError as any)?.cause?.message
+            || '';
+          logger.error('[INFORMATION REQUIRED] Storage upload failed', {
+            filename: file.originalname,
+            contentType,
+            error: uploadError.message,
+            cause: cause || undefined,
+            hasStorageClient: Boolean(storage?.storage),
+            supabaseUrlConfigured: Boolean(process.env.SUPABASE_URL),
+            supabaseServiceRoleConfigured: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+          });
+          throw new Error(
+            cause
+              ? `Could not store ${file.originalname}: ${uploadError.message} (${cause})`
+              : `Could not store ${file.originalname}: ${uploadError.message}`
+          );
         }
         uploadedStoragePaths.push(storagePath);
         const { data: document, error: documentError } = await db.from('evidence_documents').insert({ id: documentId, user_id: userUuid, tenant_id: tenantId, seller_id: tenantId, external_id: `information_required:${submission.id}:${documentId}`, doc_type: 'other', filename: file.originalname, original_filename: file.originalname, content_type: contentType, mime_type: contentType, size_bytes: file.size, storage_path: storagePath, processing_status: 'pending', parser_status: 'pending', provider: 'information_required', ingested_at: new Date().toISOString(), information_required_submission_id: submission.id, metadata: { source: 'information_required', audit_run_id: auditId, submission_id: submission.id, original_filename: file.originalname } }).select('id, filename, size_bytes, content_type').single();
