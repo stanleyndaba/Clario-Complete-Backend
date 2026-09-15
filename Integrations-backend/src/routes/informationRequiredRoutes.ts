@@ -177,11 +177,35 @@ router.post('/submit', upload.array('files', MAX_FILES), async (req: Request, re
       await db.from('information_required_submissions').delete().eq('id', submission.id);
       return res.status(500).json({ success: false, error: fileError?.message || 'Files could not be stored. Please try again.' });
     }
-    const { data: currentAudit, error: currentAuditError } = await db.from('audit_runs').select('summary').eq('id', auditId).single();
-    if (currentAuditError || !currentAudit) throw new Error(currentAuditError?.message || 'Audit could not be loaded for review state update.');
-    const summary = currentAudit?.summary && typeof currentAudit.summary === 'object' ? currentAudit.summary : {};
-    const { error: summaryError } = await db.from('audit_runs').update({ summary: { ...summary, information_required: { status: 'review_pending', submission_id: submission.id, submitted_at: submission.submitted_at, file_count: saved.length } }, updated_at: new Date().toISOString() }).eq('id', auditId).eq('tenant_id', tenantId).eq('user_id', userId);
-    if (summaryError) throw new Error(summaryError.message);
+    const { data: currentAudit, error: currentAuditError } = await db.from('audit_runs').select('summary').eq('id', auditId).maybeSingle();
+    if (currentAuditError || !currentAudit) {
+      logger.error('[INFORMATION REQUIRED] Review state lookup failed after durable submission', {
+        submissionId: submission.id,
+        auditId,
+        error: currentAuditError?.message || 'Audit not found',
+      });
+    } else {
+      const summary = currentAudit?.summary && typeof currentAudit.summary === 'object' ? currentAudit.summary : {};
+      const { error: summaryError } = await db.from('audit_runs').update({
+        summary: {
+          ...summary,
+          information_required: {
+            status: 'review_pending',
+            submission_id: submission.id,
+            submitted_at: submission.submitted_at,
+            file_count: saved.length,
+          },
+        },
+        updated_at: new Date().toISOString(),
+      }).eq('id', auditId).eq('tenant_id', tenantId);
+      if (summaryError) {
+        logger.error('[INFORMATION REQUIRED] Review state update failed after durable submission', {
+          submissionId: submission.id,
+          auditId,
+          error: summaryError.message,
+        });
+      }
+    }
     const { data: user, error: userError } = await db.from('users').select('email').eq('id', convertUserIdToUuid(userId)).maybeSingle();
     if (userError) logger.error('[INFORMATION REQUIRED] Seller email lookup failed after durable submission', { submissionId: submission.id, error: userError.message });
     const emailDelivery = await sendSubmissionEmails({ email: user?.email || null, tenantId, userId, auditId, submissionId: submission.id, filenames: files.map((file) => file.originalname), note: submission.note });
