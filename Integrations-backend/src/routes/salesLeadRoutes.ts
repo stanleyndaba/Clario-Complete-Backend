@@ -38,16 +38,24 @@ function requestMetadata(req: Request): Record<string, unknown> {
 router.post('/', async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
-    const name = textField(body.name, 'Name', 160, true)!;
+    const isSellerAuditIntake = body.intake_type === 'seller_audit';
+    const name = textField(isSellerAuditIntake ? (body.business_name || body.company || body.name) : body.name, 'Name', 160, true)!;
     const email = emailField(body.email);
-    const company = textField(body.company, 'Company', 200, true)!;
-    const role = textField(body.role, 'Role', 120, true)!;
-    const annualGmv = textField(body.gmv, 'Annual GMV', 80, true)!;
-    const accounts = textField(body.accounts, 'Accounts/marketplaces', 500);
-    const complexity = textField(body.complexity, 'Catalogue complexity', 2_000);
-    const process = textField(body.process, 'Current process', 2_000);
-    const objective = textField(body.objective, 'Objective', 2_000);
+    const company = textField(isSellerAuditIntake ? (body.business_name || body.company) : body.company, 'Company', 200, true)!;
+    const role = textField(isSellerAuditIntake ? (body.role || 'Amazon seller') : body.role, 'Role', 120, true)!;
+    const annualGmv = textField(isSellerAuditIntake ? (body.audit_period || 'Not provided') : body.gmv, 'Annual GMV', 80, true)!;
+    const accounts = textField(isSellerAuditIntake ? body.report_type : body.accounts, 'Accounts/marketplaces', 500);
+    const complexity = textField(isSellerAuditIntake ? 'Seller audit file intake' : body.complexity, 'Catalogue complexity', 2_000);
+    const process = textField(isSellerAuditIntake ? 'Amazon file upload and discrepancy audit' : body.process, 'Current process', 2_000);
+    const objective = textField(isSellerAuditIntake ? 'Identify meaningful discrepancies in seller-provided records' : body.objective, 'Objective', 2_000);
     const notes = textField(body.notes, 'Additional notes', 5_000);
+    const intakeMetadata = isSellerAuditIntake ? {
+      intake_type: 'seller_audit',
+      report_type: body.report_type || null,
+      audit_period: body.audit_period || null,
+      intake_status: 'details_submitted',
+      details_submitted_at: new Date().toISOString(),
+    } : {};
 
     const { data, error } = await supabaseAdmin
       .from('sales_leads')
@@ -62,9 +70,9 @@ router.post('/', async (req: Request, res: Response) => {
         current_process: process,
         objective,
         notes,
-        source_page: '/sales',
+        source_page: isSellerAuditIntake ? '/seller-audit' : '/sales',
         status: 'new',
-        metadata: requestMetadata(req),
+        metadata: { ...requestMetadata(req), ...intakeMetadata },
       })
       .select('id, status, created_at')
       .single();
@@ -101,10 +109,33 @@ router.post('/', async (req: Request, res: Response) => {
       lead_id: data.id,
       status: data.status,
       created_at: data.created_at,
-      message: 'Your assessment request was saved. Our sales team will review it and follow up.',
+      message: isSellerAuditIntake ? 'Your audit intake was saved. You can now send your files.' : 'Your assessment request was saved. Our sales team will review it and follow up.',
     });
   } catch (error: any) {
     return res.status(400).json({ success: false, message: error?.message || 'Please review the assessment form.' });
+  }
+});
+
+router.patch('/:id/intake-status', async (req: Request, res: Response) => {
+  try {
+    const id = textField(req.params.id, 'Lead ID', 120, true)!;
+    const status = textField(req.body?.status, 'Intake status', 60, true)!;
+    const allowedStatuses = new Set(['upload_opened', 'upload_confirmed']);
+    if (!allowedStatuses.has(status)) return res.status(400).json({ success: false, message: 'Unsupported intake status' });
+    const { data: existing, error: readError } = await supabaseAdmin.from('sales_leads').select('id, metadata').eq('id', id).single();
+    if (readError || !existing) return res.status(404).json({ success: false, message: 'Intake record not found' });
+    const metadata = existing.metadata && typeof existing.metadata === 'object' ? existing.metadata : {};
+    const timestampKey = status === 'upload_opened' ? 'upload_opened_at' : 'upload_confirmed_at';
+    const { data, error } = await supabaseAdmin.from('sales_leads').update({
+      metadata: { ...metadata, intake_status: status, [timestampKey]: new Date().toISOString() },
+    }).eq('id', id).select('id, metadata').single();
+    if (error) {
+      logger.error('[SALES_LEADS] Failed to update intake status', { leadId: id, error: error.message, code: error.code });
+      return res.status(500).json({ success: false, message: 'We could not update the upload status.' });
+    }
+    return res.json({ success: true, lead_id: data.id, intake_status: data.metadata?.intake_status });
+  } catch (error: any) {
+    return res.status(400).json({ success: false, message: error?.message || 'Please review the intake status.' });
   }
 });
 
