@@ -1,4 +1,5 @@
 import { Request, Response, Router } from 'express';
+import crypto from 'node:crypto';
 import { supabaseAdmin } from '../database/supabaseClient';
 import requirePlatformAdmin from '../middleware/platformAdminMiddleware';
 import logger from '../utils/logger';
@@ -28,6 +29,17 @@ function emailField(value: unknown): string {
   return email;
 }
 
+function createHandoffToken(): string {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function tokensMatch(expected: unknown, provided: unknown): boolean {
+  if (typeof expected !== 'string' || typeof provided !== 'string') return false;
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+  return expectedBuffer.length === providedBuffer.length && crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
 function requestMetadata(req: Request): Record<string, unknown> {
   return {
     user_agent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 500) : null,
@@ -49,14 +61,42 @@ router.post('/', async (req: Request, res: Response) => {
     const process = textField(isSellerAuditIntake ? 'Amazon file upload and discrepancy audit' : body.process, 'Current process', 2_000);
     const objective = textField(isSellerAuditIntake ? 'Identify meaningful discrepancies in seller-provided records' : body.objective, 'Objective', 2_000);
     const notes = textField(body.notes, 'Additional notes', 5_000);
+    const handoffToken = isSellerAuditIntake ? createHandoffToken() : null;
+    const idempotencyKey = isSellerAuditIntake ? textField(body.idempotency_key, 'Idempotency key', 160) : null;
+    if (isSellerAuditIntake && idempotencyKey) {
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { data: recent, error: recentError } = await supabaseAdmin
+        .from('sales_leads')
+        .select('id, status, created_at, metadata')
+        .eq('source_page', '/seller-audit')
+        .eq('email', email)
+        .gte('created_at', cutoff)
+        .limit(20);
+      if (!recentError && recent) {
+        const duplicate = recent.find((lead: any) => lead?.metadata?.idempotency_key === idempotencyKey);
+        if (duplicate) {
+          const existingToken = duplicate.metadata?.handoff_token;
+          return res.status(200).json({
+            success: true,
+            lead_id: duplicate.id,
+            handoff_token: typeof existingToken === 'string' ? existingToken : null,
+            already_submitted: true,
+            status: duplicate.status,
+            created_at: duplicate.created_at,
+            message: 'Your audit intake is already saved. You can continue to the file upload.',
+          });
+        }
+      }
+    }
     const intakeMetadata = isSellerAuditIntake ? {
       intake_type: 'seller_audit',
       report_type: body.report_type || null,
       audit_period: body.audit_period || null,
       intake_status: 'details_submitted',
       details_submitted_at: new Date().toISOString(),
+      handoff_token: handoffToken,
+      idempotency_key: idempotencyKey,
     } : {};
-
     const { data, error } = await supabaseAdmin
       .from('sales_leads')
       .insert({
@@ -107,8 +147,10 @@ router.post('/', async (req: Request, res: Response) => {
     return res.status(201).json({
       success: true,
       lead_id: data.id,
+      handoff_token: handoffToken,
       status: data.status,
       created_at: data.created_at,
+      already_submitted: false,
       message: isSellerAuditIntake ? 'Your audit intake was saved. You can now send your files.' : 'Your assessment request was saved. Our sales team will review it and follow up.',
     });
   } catch (error: any) {
@@ -120,11 +162,15 @@ router.patch('/:id/intake-status', async (req: Request, res: Response) => {
   try {
     const id = textField(req.params.id, 'Lead ID', 120, true)!;
     const status = textField(req.body?.status, 'Intake status', 60, true)!;
+    const handoffToken = textField(req.body?.handoff_token, 'Handoff token', 160, true)!;
     const allowedStatuses = new Set(['upload_opened', 'upload_confirmed']);
     if (!allowedStatuses.has(status)) return res.status(400).json({ success: false, message: 'Unsupported intake status' });
     const { data: existing, error: readError } = await supabaseAdmin.from('sales_leads').select('id, metadata').eq('id', id).single();
     if (readError || !existing) return res.status(404).json({ success: false, message: 'Intake record not found' });
     const metadata = existing.metadata && typeof existing.metadata === 'object' ? existing.metadata : {};
+    if (!tokensMatch(metadata.handoff_token, handoffToken)) {
+      return res.status(403).json({ success: false, message: 'This upload handoff is not valid.' });
+    }
     const timestampKey = status === 'upload_opened' ? 'upload_opened_at' : 'upload_confirmed_at';
     const { data, error } = await supabaseAdmin.from('sales_leads').update({
       metadata: { ...metadata, intake_status: status, [timestampKey]: new Date().toISOString() },
